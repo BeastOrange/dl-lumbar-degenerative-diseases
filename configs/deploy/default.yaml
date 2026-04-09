@@ -1,0 +1,13 @@
+server:
+  host: your-linux-server
+  user: your-user
+  remote_path: /data/projects/dl-lumbar-degenerative-diseases
+sync:
+  exclude:
+    - .git/
+    - .venv/
+    - __pycache__/
+    - .pytest_cache/
+    - .mypy_cache/
+    - artifacts/
+    - reports/figures/

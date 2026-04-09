@@ -1,0 +1,9 @@
+runs_root: ./artifacts/runs
+output_root: ./reports/figures
+primary_metrics:
+  - macro_f1
+  - macro_auc
+secondary_metrics:
+  - accuracy
+  - weighted_f1
+  - log_loss

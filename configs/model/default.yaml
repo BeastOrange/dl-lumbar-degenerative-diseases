@@ -1,0 +1,6 @@
+model_name: convnext_tiny_cbam
+num_classes: 3
+fusion_enabled: true
+pretrained: true
+in_channels: 3
+dropout: 0.2

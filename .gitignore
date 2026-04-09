@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Local env
+.env
+.env.*
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Data (keep local only)
+rsna-2024-lumbar-spine-degenerative-classification/
+
+# Generated artifacts
+artifacts/*
+!artifacts/.gitkeep
+reports/figures/*
+!reports/figures/.gitkeep
+
+# Logs
+*.log
+logs/
+
+# Model weights
+*.pt
+*.pth
+*.onnx

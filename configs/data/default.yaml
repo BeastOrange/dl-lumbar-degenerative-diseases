@@ -1,0 +1,15 @@
+dataset_root: ./rsna-2024-lumbar-spine-degenerative-classification
+output_root: ./artifacts/processed
+metadata_root: ./artifacts/metadata
+figures_root: ./reports/figures
+seed: 42
+folds: 3
+image_size: 224
+max_studies: null
+series_types:
+  - Sagittal T1
+  - Sagittal T2/STIR
+  - Axial T2
+split:
+  train_ratio: 0.8
+  val_ratio: 0.2
