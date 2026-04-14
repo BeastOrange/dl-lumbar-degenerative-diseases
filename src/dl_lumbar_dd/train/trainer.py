@@ -164,14 +164,34 @@ class Trainer:
     def _build_criterion(self, train_loader: DataLoader[Any]) -> nn.Module:
         loss_name = getattr(self.config, "loss_name", "cross_entropy").strip().lower()
         mode = (self.config.class_weight_mode or "").strip().lower()
+        ls = float(getattr(self.config, "label_smoothing", 0.0))
+
         if loss_name == "focal":
+            if ls > 0.0:
+                raise ValueError(
+                    "label_smoothing > 0 is not compatible with focal loss. "
+                    "Use loss_name='cross_entropy' when label_smoothing is enabled."
+                )
             if mode:
                 raise ValueError("focal loss does not support class_weight_mode")
             return FocalLoss(gamma=float(getattr(self.config, "focal_gamma", 2.0)))
+
         if loss_name not in {"", "cross_entropy"}:
             raise ValueError(f"Unsupported loss_name: {getattr(self.config, 'loss_name', None)}")
-        if not mode:
+
+        if not mode and ls <= 0.0:
             return nn.CrossEntropyLoss()
+
+        if mode and ls > 0.0:
+            weights = self._build_balanced_class_weights(train_loader)
+            return nn.CrossEntropyLoss(
+                label_smoothing=ls,
+                weight=(weights.to(device=self.device, dtype=torch.float32) if weights is not None else None),
+            )
+
+        if ls > 0.0:
+            return nn.CrossEntropyLoss(label_smoothing=ls)
+
         if mode != "balanced":
             raise ValueError(f"Unsupported class_weight_mode: {self.config.class_weight_mode}")
         weights = self._build_balanced_class_weights(train_loader)

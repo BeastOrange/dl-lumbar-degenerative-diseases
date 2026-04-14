@@ -91,6 +91,7 @@ def _build_training_config(config: dict[str, Any]) -> TrainingConfig:
         overfit_subset_size=_as_optional_int(config.get("overfit_subset_size")),
         early_stopping_patience=_as_optional_int(config.get("early_stopping_patience")),
         train_augment_mode=_as_optional_str(config.get("train_augment_mode")),
+        label_smoothing=float(config.get("label_smoothing", 0.0)),
     )
 
 

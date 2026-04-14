@@ -29,6 +29,7 @@ class TrainingConfig:
     overfit_subset_size: int | None = None
     early_stopping_patience: int | None = None
     train_augment_mode: str | None = None
+    label_smoothing: float = 0.0
 
 
 @dataclass(slots=True)

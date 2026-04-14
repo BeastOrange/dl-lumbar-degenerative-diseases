@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 import json
 from pathlib import Path
@@ -73,8 +74,8 @@ class LumbarStudyDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
     def _apply_augmentation(self, tensor: torch.Tensor) -> torch.Tensor:
         if self.augment_mode is None:
             return tensor
-        if self.augment_mode != "light":
-            raise ValueError(f"Unsupported augment_mode: {self.augment_mode}")
+
+        # --- Intensity augmentations (all modes) ---
         augmented = tensor.clone()
         brightness = 1.0 + (torch.rand(1).item() - 0.5) * 0.10
         contrast = 1.0 + (torch.rand(1).item() - 0.5) * 0.10
@@ -82,6 +83,41 @@ class LumbarStudyDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         mean = augmented.mean(dim=(-2, -1), keepdim=True)
         augmented = (augmented - mean) * contrast + mean
         augmented = augmented + torch.randn_like(augmented) * 0.003
+
+        # --- Geometric augmentations (medium mode only) ---
+        # NOTE: No flip is applied — axial T2 carries definitive left/right anatomical
+        # orientation (left vs right foraminal stenosis), which would be corrupted.
+        if self.augment_mode == "medium":
+            # Geometric augmentation is applied with the SAME transform to ALL three views
+            # to preserve spatial correspondence across T1-sag / T2-sag / T2-axial.
+            angle_deg = (torch.rand(1).item() - 0.5) * 20.0  # ±10 degrees (reduced from ±15)
+            angle_rad = angle_deg * (math.pi / 180.0)
+            scale = 1.0 + (torch.rand(1).item() - 0.5) * 0.10  # 0.95 ~ 1.05 (reduced)
+            tx = (torch.rand(1).item() - 0.5) * 0.05  # ±2.5% of width
+            ty = (torch.rand(1).item() - 0.5) * 0.05  # ±2.5% of height
+
+            cos_a = math.cos(angle_rad)
+            sin_a = math.sin(angle_rad)
+            # Single 2D affine matrix shared across all views: (2, 3)
+            theta = torch.tensor(
+                [[scale * cos_a, -scale * sin_a, tx],
+                 [scale * sin_a,  scale * cos_a, ty]],
+                dtype=torch.float32,
+            )
+            # Same transform for all views: repeat theta for each view (3x)
+            grid = torch.nn.functional.affine_grid(
+                theta.unsqueeze(0).repeat(augmented.shape[0], 1, 1),
+                augmented.shape,
+                align_corners=False,
+            )
+            augmented = torch.nn.functional.grid_sample(
+                augmented, grid,
+                mode="bilinear", padding_mode="zeros", align_corners=False
+            )
+
+        elif self.augment_mode != "light":
+            raise ValueError(f"Unsupported augment_mode: {self.augment_mode}")
+
         return augmented.clamp(0.0, 1.0)
 
 
