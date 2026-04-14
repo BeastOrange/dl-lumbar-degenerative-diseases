@@ -22,14 +22,34 @@ class ModelSpec:
     image_size: int | None = 64
 
 
+class _ImagenetNormalize(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406], dtype=torch.float32).view(1, 3, 1, 1))
+        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225], dtype=torch.float32).view(1, 3, 1, 1))
+
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        mean = self.mean.to(device=inputs.device, dtype=inputs.dtype)
+        std = self.std.to(device=inputs.device, dtype=inputs.dtype)
+        return (inputs - mean) / std
+
+
+class _RepeatGrayscaleToRgb(nn.Module):
+    def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        return inputs.repeat(1, 3, 1, 1)
+
+
 class LumbarModel(nn.Module):
     def __init__(self, spec: ModelSpec) -> None:
         super().__init__()
         encoder_factory = BACKBONE_FACTORIES[spec.model_name]
         self.encoder = encoder_factory(spec.pretrained, spec.image_size)
         self.input_adapter = nn.Identity()
-        if spec.in_channels != 3:
+        if spec.pretrained and spec.in_channels == 1:
+            self.input_adapter = _RepeatGrayscaleToRgb()
+        elif spec.in_channels != 3:
             self.input_adapter = nn.Conv2d(spec.in_channels, 3, kernel_size=1)
+        self.input_normalizer = _ImagenetNormalize() if spec.pretrained else nn.Identity()
         self.fusion = MultiViewFusionAdapter(self.encoder.feature_dim) if spec.fusion_enabled else None
         self.norm = nn.LayerNorm(self.encoder.feature_dim)
         self.dropout = nn.Dropout(spec.dropout)
@@ -44,10 +64,10 @@ class LumbarModel(nn.Module):
 
     def _prepare_views(self, inputs: torch.Tensor) -> list[torch.Tensor]:
         if inputs.ndim == 4:
-            return [self.input_adapter(inputs)]
+            return [self.input_normalizer(self.input_adapter(inputs))]
         if inputs.ndim != 5:
             raise ValueError(f"Expected 4D or 5D input tensor, got shape {tuple(inputs.shape)}")
-        return [self.input_adapter(inputs[:, index]) for index in range(inputs.size(1))]
+        return [self.input_normalizer(self.input_adapter(inputs[:, index])) for index in range(inputs.size(1))]
 
 
 def available_models() -> tuple[str, ...]:

@@ -40,14 +40,20 @@ def load_rsna_tables(dataset_root: str | Path, max_studies: int | None = None) -
     return RSNATables(dataset_root=root, train=train, series=series, coordinates=coordinates)
 
 
-def build_study_index(bundle: RSNATables) -> pd.DataFrame:
+def build_study_index(bundle: RSNATables, target_column: str | None = None) -> pd.DataFrame:
     """Aggregate patient-level metadata for split generation and preprocessing."""
     labels = bundle.train.copy()
+    if target_column is not None and target_column not in labels.columns:
+        raise ValueError(f"Unknown target_column: {target_column}")
     labels["moderate_count"] = labels.loc[:, TARGET_COLUMNS].eq("Moderate").sum(axis=1)
     labels["severe_count"] = labels.loc[:, TARGET_COLUMNS].eq("Severe").sum(axis=1)
     labels["missing_count"] = labels.loc[:, TARGET_COLUMNS].isna().sum(axis=1)
     labels["severity_burden"] = labels["moderate_count"] + (2 * labels["severe_count"])
     labels["stratify_key"] = labels.apply(_make_stratify_key, axis=1)
+    if target_column is not None:
+        target_labels = labels[target_column].fillna("Missing").astype(str)
+        labels["target_label"] = target_labels
+        labels["target_stratify_key"] = target_labels + "|" + labels["stratify_key"]
 
     series_counts = bundle.series.groupby("study_id").size().rename("series_count")
     series_presence = _build_series_presence(bundle.series)

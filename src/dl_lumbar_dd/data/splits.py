@@ -31,8 +31,7 @@ def build_split_manifests(
     folds: int = 3,
 ) -> SplitManifests:
     """Create train/validation manifests and optional CV folds."""
-    stratify_labels = _prepare_stratify_labels(study_index["stratify_key"], minimum_count=2)
-    stratify_labels = _ensure_split_feasible(study_index, stratify_labels, train_ratio)
+    stratify_labels = _select_stratify_labels(study_index, minimum_count=2, train_ratio=train_ratio)
     train_frame, validation_frame = train_test_split(
         study_index,
         train_size=train_ratio,
@@ -64,7 +63,7 @@ def save_split_manifests(manifests: SplitManifests, output_root: str | Path) -> 
 def _build_cross_validation_folds(study_index: pd.DataFrame, seed: int, folds: int) -> list[FoldManifest]:
     if folds < 2:
         return []
-    stratify_labels = _prepare_stratify_labels(study_index["stratify_key"], minimum_count=folds)
+    stratify_labels = _select_stratify_labels(study_index, minimum_count=folds, train_ratio=None)
     splitter = _make_splitter(seed=seed, folds=folds, stratify_labels=stratify_labels)
     fold_manifests: list[FoldManifest] = []
     for fold_index, (train_idx, validation_idx) in enumerate(splitter.split(study_index, stratify_labels)):
@@ -81,6 +80,26 @@ def _prepare_stratify_labels(series: pd.Series, minimum_count: int) -> pd.Series
     if counts.empty or counts.min() < minimum_count:
         return None
     return series
+
+
+def _select_stratify_labels(
+    study_index: pd.DataFrame,
+    *,
+    minimum_count: int,
+    train_ratio: float | None,
+) -> pd.Series | None:
+    for column in ("target_stratify_key", "target_label", "stratify_key"):
+        if column not in study_index.columns:
+            continue
+        stratify_labels = _prepare_stratify_labels(study_index[column], minimum_count=minimum_count)
+        if stratify_labels is None:
+            continue
+        if train_ratio is None:
+            return stratify_labels
+        stratify_labels = _ensure_split_feasible(study_index, stratify_labels, train_ratio)
+        if stratify_labels is not None:
+            return stratify_labels
+    return None
 
 
 def _ensure_split_feasible(

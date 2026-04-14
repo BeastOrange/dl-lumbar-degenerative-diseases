@@ -12,7 +12,7 @@ from dl_lumbar_dd.config import load_yaml
 from dl_lumbar_dd.models import create_model
 from dl_lumbar_dd.train.config import TrainingConfig
 from dl_lumbar_dd.train.data import build_dataloaders
-from dl_lumbar_dd.train.trainer import Trainer
+from dl_lumbar_dd.train.trainer import Trainer, set_global_seed
 from dl_lumbar_dd.utils.io import write_json
 from dl_lumbar_dd.visualization import save_training_history
 
@@ -21,6 +21,7 @@ def run_training(config_path: str | Path) -> dict[str, Any]:
     """Run one training job from YAML config and persist artifacts."""
     raw_config = load_yaml(config_path)
     training_config = _build_training_config(raw_config)
+    set_global_seed(training_config.seed)
     train_loader, validation_loader = build_dataloaders(
         dataset_root=str(raw_config["dataset_root"]),
         processed_root=str(raw_config["processed_root"]),
@@ -34,6 +35,9 @@ def run_training(config_path: str | Path) -> dict[str, Any]:
         max_studies=_as_optional_int(raw_config.get("max_studies")),
         max_train_samples=_as_optional_int(raw_config.get("max_train_samples")),
         max_val_samples=_as_optional_int(raw_config.get("max_val_samples")),
+        sampler_mode=training_config.sampler_mode,
+        overfit_subset_size=training_config.overfit_subset_size,
+        train_augment_mode=training_config.train_augment_mode,
     )
     model = create_model(
         model_name=training_config.model_name,
@@ -51,12 +55,15 @@ def run_training(config_path: str | Path) -> dict[str, Any]:
     summary = {
         "run_dir": str(result.run_dir),
         "best_checkpoint": str(result.best_checkpoint),
+        "best_epoch": result.best_epoch,
         "metrics_csv": str(result.metrics_csv),
         "history_json": str(result.history_json),
         "history_plot": str(history_plot),
         "model_name": training_config.model_name,
         "fusion_enabled": training_config.fusion_enabled,
     }
+    if result.predictions_csv is not None:
+        summary["predictions_csv"] = str(result.predictions_csv)
     write_json(summary, result.run_dir / "run_summary.json")
     return summary
 
@@ -77,6 +84,13 @@ def _build_training_config(config: dict[str, Any]) -> TrainingConfig:
         device=str(config.get("device", "auto")),
         seed=int(config.get("seed", 42)),
         image_size=int(config.get("image_size", 224)),
+        loss_name=str(config.get("loss_name", "cross_entropy")),
+        focal_gamma=float(config.get("focal_gamma", 2.0)),
+        class_weight_mode=_as_optional_str(config.get("class_weight_mode")),
+        sampler_mode=_as_optional_str(config.get("sampler_mode")),
+        overfit_subset_size=_as_optional_int(config.get("overfit_subset_size")),
+        early_stopping_patience=_as_optional_int(config.get("early_stopping_patience")),
+        train_augment_mode=_as_optional_str(config.get("train_augment_mode")),
     )
 
 
@@ -107,3 +121,9 @@ def _as_optional_int(value: Any) -> int | None:
     if value in (None, "", "null"):
         return None
     return int(value)
+
+
+def _as_optional_str(value: Any) -> str | None:
+    if value in (None, "", "null"):
+        return None
+    return str(value)

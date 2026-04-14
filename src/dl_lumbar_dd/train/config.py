@@ -22,6 +22,13 @@ class TrainingConfig:
     device: str = "auto"
     seed: int = 42
     image_size: int = 224
+    loss_name: str = "cross_entropy"
+    focal_gamma: float = 2.0
+    class_weight_mode: str | None = None
+    sampler_mode: str | None = None
+    overfit_subset_size: int | None = None
+    early_stopping_patience: int | None = None
+    train_augment_mode: str | None = None
 
 
 @dataclass(slots=True)
@@ -30,3 +37,5 @@ class TrainingResult:
     best_checkpoint: Path
     metrics_csv: Path
     history_json: Path
+    best_epoch: int | None = None
+    predictions_csv: Path | None = None

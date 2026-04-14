@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Callable
 
 import torch
@@ -32,9 +34,8 @@ class ConvNeXtCBAMEncoder(nn.Module):
 
     def __init__(self, pretrained: bool, image_size: int | None) -> None:
         super().__init__()
-        weights = tv_models.ConvNeXt_Tiny_Weights.DEFAULT if pretrained else None
-        backbone = tv_models.convnext_tiny(weights=weights)
         self.image_size = image_size
+        backbone = _create_convnext_tiny_backbone(pretrained)
         self.features = backbone.features
         self.cbam = CBAM(self.feature_dim)
         self.avgpool = backbone.avgpool
@@ -129,3 +130,36 @@ BACKBONE_FACTORIES: dict[str, Callable[[bool, int | None], nn.Module]] = {
     "swin_transformer": SwinHierarchicalEncoder,
     "vit_base_posenc": ViTPositionalEncoder,
 }
+
+
+def _create_convnext_tiny_backbone(pretrained: bool) -> nn.Module:
+    if not pretrained:
+        return tv_models.convnext_tiny(weights=None)
+    weights_path = _resolve_local_weights_path("LUMBAR_CONVNEXT_TINY_WEIGHTS")
+    if weights_path is None:
+        return tv_models.convnext_tiny(weights=tv_models.ConvNeXt_Tiny_Weights.DEFAULT)
+    model = tv_models.convnext_tiny(weights=None)
+    state_dict = _load_torchvision_checkpoint(weights_path)
+    model.load_state_dict(state_dict, strict=True)
+    return model
+
+
+def _resolve_local_weights_path(env_name: str) -> Path | None:
+    raw_value = os.getenv(env_name, "").strip()
+    if not raw_value:
+        return None
+    path = Path(raw_value).expanduser()
+    if not path.is_file():
+        return None
+    return path
+
+
+def _load_torchvision_checkpoint(path: Path) -> dict[str, torch.Tensor]:
+    checkpoint = torch.load(path, map_location="cpu")
+    if isinstance(checkpoint, dict) and "state_dict" in checkpoint:
+        state_dict = checkpoint["state_dict"]
+        if isinstance(state_dict, dict):
+            return state_dict
+    if isinstance(checkpoint, dict):
+        return checkpoint
+    raise ValueError(f"Unsupported checkpoint format: {path}")

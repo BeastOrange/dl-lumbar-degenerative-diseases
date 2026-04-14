@@ -4,59 +4,115 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import random
+import sys
 from dataclasses import asdict
 from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import torch
 from torch import nn
+from torch.nn import functional as F
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from dl_lumbar_dd.train.config import TrainingConfig, TrainingResult
 from dl_lumbar_dd.train.metrics import classification_metrics, metric_row
 from dl_lumbar_dd.utils.io import ensure_dir
 
 
+def set_global_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+class FocalLoss(nn.Module):
+    def __init__(self, gamma: float = 2.0) -> None:
+        super().__init__()
+        self.gamma = float(gamma)
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        cross_entropy = F.cross_entropy(logits, targets, reduction="none")
+        pt = torch.exp(-cross_entropy)
+        loss = torch.pow(1.0 - pt, self.gamma) * cross_entropy
+        return loss.mean()
+
+
 class Trainer:
     def __init__(self, model: nn.Module, config: TrainingConfig) -> None:
         self.config = config
-        self._set_seed(config.seed)
+        set_global_seed(config.seed)
         self.device = self._resolve_device(config.device)
         self.model = model.to(self.device)
         self.optimizer = self._build_optimizer()
         self.scheduler = self._build_scheduler()
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion: nn.Module = nn.CrossEntropyLoss()
         self.scaler = torch.amp.GradScaler("cuda", enabled=config.amp and self.device.type == "cuda")
         self.run_dir = self._create_run_dir()
 
     def fit(self, train_loader: DataLoader[Any], val_loader: DataLoader[Any]) -> TrainingResult:
         best_score = float("-inf")
+        best_epoch: int | None = None
+        epochs_without_improvement = 0
         history: list[dict[str, float | int]] = []
         best_checkpoint = self.run_dir / "best.ckpt"
+        predictions_csv: Path | None = None
+        self.criterion = self._build_criterion(train_loader)
         for epoch in range(1, self.config.epochs + 1):
-            train_metrics = self._run_epoch(train_loader, training=True)
-            val_metrics = self._run_epoch(val_loader, training=False)
+            train_metrics, _ = self._run_epoch(train_loader, training=True, epoch=epoch)
+            val_metrics, val_outputs = self._run_epoch(val_loader, training=False, epoch=epoch, collect_scores=True)
             learning_rate = float(self.optimizer.param_groups[0]["lr"])
             history.append(metric_row(epoch, learning_rate, {"train": train_metrics, "val": val_metrics}))
-            if val_metrics["macro_f1"] >= best_score:
-                best_score = float(val_metrics["macro_f1"])
+            current_score = float(val_metrics["macro_f1"])
+            if current_score > best_score:
+                best_score = current_score
+                best_epoch = epoch
+                epochs_without_improvement = 0
                 self._save_checkpoint(best_checkpoint, epoch, history)
+                predictions_csv = self._write_predictions_csv(
+                    targets=val_outputs["targets"],
+                    predictions=val_outputs["predictions"],
+                    scores=val_outputs["scores"],
+                )
+            else:
+                epochs_without_improvement += 1
             if self.scheduler is not None:
                 self.scheduler.step()
+            if self._should_stop_early(epochs_without_improvement):
+                break
         metrics_csv = self._write_metrics_csv(history)
         history_json = self._write_history_json(history)
-        return TrainingResult(self.run_dir, best_checkpoint, metrics_csv, history_json)
+        return TrainingResult(self.run_dir, best_checkpoint, metrics_csv, history_json, best_epoch, predictions_csv)
 
-    def _run_epoch(self, loader: DataLoader[Any], training: bool) -> dict[str, float]:
+    def _run_epoch(
+        self,
+        loader: DataLoader[Any],
+        training: bool,
+        epoch: int,
+        collect_scores: bool = False,
+    ) -> tuple[dict[str, float], dict[str, list[Any]]]:
         self.model.train(mode=training)
         losses: list[float] = []
         predictions: list[int] = []
         targets: list[int] = []
+        scores: list[list[float]] = []
         grad_context = torch.enable_grad() if training else torch.no_grad()
-        for batch in loader:
+        progress = tqdm(
+            loader,
+            total=len(loader),
+            desc=self._progress_desc(training=training, epoch=epoch),
+            unit="batch",
+            dynamic_ncols=True,
+            disable=not self._should_show_progress(),
+        )
+        for batch in progress:
             inputs, labels = self._move_batch(batch)
             autocast_context = self._autocast_context()
             with grad_context, autocast_context:
@@ -66,11 +122,20 @@ class Trainer:
                 self.optimizer.zero_grad(set_to_none=True)
                 self._backward_step(loss)
             losses.append(float(loss.detach().cpu()))
-            predictions.extend(logits.argmax(dim=1).detach().cpu().tolist())
+            probabilities = torch.softmax(logits.detach(), dim=1)
+            predictions.extend(probabilities.argmax(dim=1).cpu().tolist())
             targets.extend(labels.detach().cpu().tolist())
-        metrics = classification_metrics(targets=targets, predictions=predictions)
+            if collect_scores:
+                scores.extend(probabilities.cpu().tolist())
+            progress.set_postfix(loss=f"{sum(losses) / len(losses):.4f}")
+        progress.close()
+        metrics = classification_metrics(
+            targets=targets,
+            predictions=predictions,
+            num_classes=self._infer_num_classes(targets),
+        )
         metrics["loss"] = sum(losses) / max(len(losses), 1)
-        return metrics
+        return metrics, {"targets": targets, "predictions": predictions, "scores": scores}
 
     def _move_batch(self, batch: Any) -> tuple[torch.Tensor, torch.Tensor]:
         if isinstance(batch, dict):
@@ -96,6 +161,40 @@ class Trainer:
             return nullcontext()
         return torch.autocast(device_type="cuda", dtype=torch.float16)
 
+    def _build_criterion(self, train_loader: DataLoader[Any]) -> nn.Module:
+        loss_name = getattr(self.config, "loss_name", "cross_entropy").strip().lower()
+        mode = (self.config.class_weight_mode or "").strip().lower()
+        if loss_name == "focal":
+            if mode:
+                raise ValueError("focal loss does not support class_weight_mode")
+            return FocalLoss(gamma=float(getattr(self.config, "focal_gamma", 2.0)))
+        if loss_name not in {"", "cross_entropy"}:
+            raise ValueError(f"Unsupported loss_name: {getattr(self.config, 'loss_name', None)}")
+        if not mode:
+            return nn.CrossEntropyLoss()
+        if mode != "balanced":
+            raise ValueError(f"Unsupported class_weight_mode: {self.config.class_weight_mode}")
+        weights = self._build_balanced_class_weights(train_loader)
+        if weights is None:
+            return nn.CrossEntropyLoss()
+        return nn.CrossEntropyLoss(weight=weights.to(device=self.device, dtype=torch.float32))
+
+    def _build_balanced_class_weights(self, train_loader: DataLoader[Any]) -> torch.Tensor | None:
+        label_indices = self._extract_label_indices(train_loader.dataset)
+        if not label_indices:
+            return None
+        num_classes = self._infer_num_classes(label_indices)
+        if num_classes <= 0:
+            return None
+        counts = torch.bincount(torch.tensor(label_indices, dtype=torch.long), minlength=num_classes).to(dtype=torch.float32)
+        nonzero = counts > 0
+        if not torch.any(nonzero):
+            return None
+        weights = torch.zeros_like(counts)
+        denominator = float(num_classes)
+        weights[nonzero] = counts[nonzero].sum() / (denominator * counts[nonzero])
+        return weights
+
     def _build_optimizer(self) -> torch.optim.Optimizer:
         name = self.config.optimizer_name.lower()
         if name == "sgd":
@@ -119,13 +218,20 @@ class Trainer:
         torch.save(
             {
                 "epoch": epoch,
-                "config": asdict(self.config),
+                "config": self._serialized_config(),
                 "model_state": self.model.state_dict(),
                 "optimizer_state": self.optimizer.state_dict(),
                 "history": history,
             },
             path,
         )
+
+    def _serialized_config(self) -> dict[str, Any]:
+        config_dict = asdict(self.config)
+        for key, value in list(config_dict.items()):
+            if isinstance(value, Path):
+                config_dict[key] = str(value)
+        return config_dict
 
     def _write_metrics_csv(self, history: list[dict[str, Any]]) -> Path:
         destination = self.run_dir / "metrics.csv"
@@ -140,12 +246,77 @@ class Trainer:
         destination.write_text(json.dumps(history, indent=2), encoding="utf-8")
         return destination
 
+    def _write_predictions_csv(
+        self,
+        targets: list[int],
+        predictions: list[int],
+        scores: list[list[float]],
+    ) -> Path:
+        destination = self.run_dir / "predictions.csv"
+        score_count = max((len(row) for row in scores), default=self._infer_num_classes([]))
+        fieldnames = ["y_true", "y_pred", *[f"score_{index}" for index in range(score_count)]]
+        with destination.open("w", newline="", encoding="utf-8") as file:
+            writer = csv.DictWriter(file, fieldnames=fieldnames)
+            writer.writeheader()
+            for target, prediction, score_row in zip(targets, predictions, scores, strict=True):
+                row: dict[str, int | float] = {"y_true": target, "y_pred": prediction}
+                for index, score in enumerate(score_row):
+                    row[f"score_{index}"] = float(score)
+                writer.writerow(row)
+        return destination
+
+    def _should_stop_early(self, epochs_without_improvement: int) -> bool:
+        patience = self.config.early_stopping_patience
+        if patience is None:
+            return False
+        return epochs_without_improvement > patience
+
+    def _extract_label_indices(self, dataset: Any) -> list[int]:
+        direct = self._normalize_label_indices(getattr(dataset, "label_indices", None))
+        if direct:
+            return direct
+        direct = self._normalize_label_indices(getattr(dataset, "labels", None))
+        if direct:
+            return direct
+        direct = self._normalize_label_indices(getattr(dataset, "targets", None))
+        if direct:
+            return direct
+        subset_indices = getattr(dataset, "indices", None)
+        subset_source = getattr(dataset, "dataset", None)
+        if subset_indices is None or subset_source is None:
+            return []
+        base_labels = self._extract_label_indices(subset_source)
+        if not base_labels:
+            return []
+        return [base_labels[int(index)] for index in subset_indices if 0 <= int(index) < len(base_labels)]
+
     @staticmethod
-    def _set_seed(seed: int) -> None:
-        random.seed(seed)
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(seed)
+    def _normalize_label_indices(raw_labels: Any) -> list[int]:
+        if raw_labels is None:
+            return []
+        if isinstance(raw_labels, torch.Tensor):
+            return [int(value) for value in raw_labels.detach().cpu().tolist()]
+        try:
+            return [int(value) for value in raw_labels]
+        except TypeError:
+            return []
+
+    def _infer_num_classes(self, label_indices: list[int]) -> int:
+        label_count = max(label_indices, default=-1) + 1
+        model_head = getattr(self.model, "head", None)
+        model_count = getattr(model_head, "out_features", 0)
+        return max(int(label_count), int(model_count))
+
+    def _progress_desc(self, training: bool, epoch: int) -> str:
+        stage = "train" if training else "val"
+        return f"Epoch {epoch}/{self.config.epochs} [{stage}]"
+
+    @staticmethod
+    def _should_show_progress() -> bool:
+        override = os.getenv("LUMBAR_TQDM")
+        if override is not None:
+            return override.lower() not in {"0", "false", "no"}
+        return sys.stdout.isatty() or sys.stderr.isatty()
 
     @staticmethod
     def _resolve_device(requested: str) -> torch.device:
