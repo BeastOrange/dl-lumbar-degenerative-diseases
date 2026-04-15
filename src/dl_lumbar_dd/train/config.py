@@ -32,6 +32,8 @@ class TrainingConfig:
     label_smoothing: float = 0.0
     # Multi-task: list of target column names (None = single-task mode)
     target_columns: list[str] | None = None
+    # TTA: number of augmented views to average at inference time
+    tta_count: int = 1
 
 
 @dataclass(slots=True)

@@ -368,7 +368,7 @@ def test_trainer_stops_early_when_validation_metric_stalls(tmp_path: Path, monke
     )
     trainer = Trainer(model=model, config=config)
 
-    def fake_run_epoch(loader: object, training: bool, epoch: int, collect_scores: bool = False) -> tuple[dict[str, float], dict[str, list[object]]]:
+    def fake_run_epoch(loader: object, training: bool, epoch: int, collect_scores: bool = False, tta_count: int = 1) -> tuple[dict[str, float], dict[str, list[object]]]:
         if training:
             return {"macro_f1": 0.5, "accuracy": 0.5, "loss": 1.0}, {"targets": [], "predictions": [], "scores": []}
         score = 0.6 if epoch == 1 else 0.4
@@ -427,6 +427,7 @@ def test_trainer_stops_early_and_metrics_match_actual_epochs(tmp_path: Path, mon
         training: bool,
         epoch: int,
         collect_scores: bool = False,
+        tta_count: int = 1,
     ) -> tuple[dict[str, float], dict[str, list[float] | list[int] | list[list[float]]]]:
         if training:
             metrics = {

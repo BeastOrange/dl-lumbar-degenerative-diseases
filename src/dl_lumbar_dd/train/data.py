@@ -147,6 +147,18 @@ class LumbarStudyDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         return augmented.clamp(0.0, 1.0)
 
 
+def apply_tta_augmentation(tensor: torch.Tensor) -> torch.Tensor:
+    """Apply a single random light augmentation (for TTA use)."""
+    augmented = tensor.clone()
+    brightness = 1.0 + (torch.rand(1).item() - 0.5) * 0.10
+    contrast = 1.0 + (torch.rand(1).item() - 0.5) * 0.10
+    augmented = augmented * brightness
+    mean = augmented.mean(dim=(-2, -1), keepdim=True)
+    augmented = (augmented - mean) * contrast + mean
+    augmented = augmented + torch.randn_like(augmented) * 0.003
+    return augmented.clamp(0.0, 1.0)
+
+
 def prepare_bundle_and_manifests(
     dataset_root: str | Path,
     processed_root: str | Path,

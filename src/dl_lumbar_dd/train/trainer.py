@@ -70,7 +70,10 @@ class Trainer:
         self.criterion = self._build_criterion(train_loader)
         for epoch in range(1, self.config.epochs + 1):
             train_metrics, _ = self._run_epoch(train_loader, training=True, epoch=epoch)
-            val_metrics, val_outputs = self._run_epoch(val_loader, training=False, epoch=epoch, collect_scores=True)
+            val_metrics, val_outputs = self._run_epoch(
+                val_loader, training=False, epoch=epoch, collect_scores=True,
+                tta_count=int(getattr(self.config, "tta_count", 1)),
+            )
             learning_rate = float(self.optimizer.param_groups[0]["lr"])
             history.append(metric_row(epoch, learning_rate, {"train": train_metrics, "val": val_metrics}))
             current_score = float(val_metrics["macro_f1"])
@@ -100,6 +103,7 @@ class Trainer:
         training: bool,
         epoch: int,
         collect_scores: bool = False,
+        tta_count: int = 1,
     ) -> tuple[dict[str, float], dict[str, list[Any]]]:
         self.model.train(mode=training)
         losses: list[float] = []
@@ -115,19 +119,33 @@ class Trainer:
             dynamic_ncols=True,
             disable=not self._should_show_progress(),
         )
+        from dl_lumbar_dd.train.data import apply_tta_augmentation
+
         for batch in progress:
             inputs, labels = self._move_batch(batch)
             autocast_context = self._autocast_context()
             with grad_context, autocast_context:
-                logits = self.model(inputs)
-                loss = self._compute_loss(logits, labels)
+                if training or tta_count <= 1:
+                    logits = self.model(inputs)
+                    loss = self._compute_loss(logits, labels)
+                else:
+                    # TTA: average logits over multiple augmented views
+                    logits_list: list[torch.Tensor] = []
+                    for t in range(tta_count):
+                        if t == 0:
+                            aug_inputs = inputs
+                        else:
+                            aug_inputs = apply_tta_augmentation(inputs)
+                        logits_list.append(self.model(aug_inputs))
+                    logits = torch.stack(logits_list, dim=0).mean(dim=0)
+                    loss = self._compute_loss(logits, labels)
+
             if training:
                 self.optimizer.zero_grad(set_to_none=True)
                 self._backward_step(loss)
             losses.append(float(loss.detach().cpu()))
             # Flatten for single-task metrics; multi-task uses task-0 for quick monitoring
             if logits.ndim == 3:
-                # Multi-task: (batch, num_tasks, num_classes) → use first task
                 task0_logits = logits[:, 0, :]
                 task0_labels = labels[:, 0]
             else:

@@ -128,6 +128,7 @@ def _build_training_config(config: dict[str, Any]) -> TrainingConfig:
         early_stopping_patience=_as_optional_int(config.get("early_stopping_patience")),
         train_augment_mode=_as_optional_str(config.get("train_augment_mode")),
         label_smoothing=float(config.get("label_smoothing", 0.0)),
+        tta_count=int(config.get("tta_count", 1)),
     )
 
 
