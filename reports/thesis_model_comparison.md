@@ -11,11 +11,12 @@
 
 | 排名 | 模型 | 最佳Epoch | **val_macro_f1** | val_accuracy | 过拟合程度 |
 |:---:|------|:---:|:---:|:---:|:---:|
-| 1 | **ConvNeXt-Tiny + CBAM** | 6 | **0.6685** | 0.800 | ⚠️ 中等 |
-| 2 | DenseNet-121 + Dense Reuse | 10 | 0.6078 | 0.808 | ❌ 严重 |
-| 3 | Swin Transformer + Hierarchical Fusion | 15 | 0.5231 | 0.717 | ✅ 轻微 |
-| 4 | ResNet-101 3D + FeatureVolume3D | 6 | 0.4942 | 0.762 | ❌ 严重 |
-| 5 | ViT-Base + Positional Encoding | 20 | 0.3415 | 0.544 | ❌ 严重 |
+| 1 | **ConvNeXt-Tiny + CBAM + TTA(5x)** | 15 | **0.6748** | 0.833 | ⚠️ 中等 |
+| 2 | ConvNeXt-Tiny + CBAM | 6 | 0.6685 | 0.800 | ⚠️ 中等 |
+| 3 | DenseNet-121 + Dense Reuse | 10 | 0.6078 | 0.808 | ❌ 严重 |
+| 4 | Swin Transformer + Hierarchical Fusion | 15 | 0.5231 | 0.717 | ✅ 轻微 |
+| 5 | ResNet-101 3D + FeatureVolume3D | 6 | 0.4942 | 0.762 | ❌ 严重 |
+| 6 | ViT-Base + Positional Encoding | 20 | 0.3415 | 0.544 | ❌ 严重 |
 
 > **注**: val_macro_f1 = sklearn.metrics.f1_score(y_true, y_pred, average='macro')，在最佳Epoch的验证集上计算。
 
@@ -90,10 +91,10 @@
 
 ### 优化方向
 
-1. **增强数据增强**（medium模式：旋转±15° + 仿射变换，保持解剖方向）
-2. **添加Label Smoothing**（值=0.1）减少过拟合
-3. **多任务学习**（同时预测25种病变，充分利用任务间相关性）
-4. **测试时增强(TTA)**（对验证图像做多次增强后平均预测）
+1. **测试时增强(TTA)** ✅ 已验证有效（+0.63% val_f1提升）
+2. ~~增强数据增强（medium模式）~~ → 对预训练模型有害，不推荐
+3. ~~多任务学习~~ → 梯度冲突导致坍缩，不推荐
+4. ~~增强正则化（dropout/wd/ls）~~ → 未超越baseline
 
 ---
 
@@ -135,7 +136,31 @@
 
 **关键发现**: 几何增强（旋转±10°、缩放±5%、平移±2.5%）破坏了Swin Transformer的预训练权重。预训练模型对强烈的几何变换极为敏感，轻量增强（brightness/contrast/noise）更适合此类模型。
 
-### A3. 所有实验汇总
+### A3. ConvNeXt+TTA实验
+
+| 配置项 | baseline | TTA(5x) |
+|-------|---------|--------|
+| tta_count | 1 | **5** |
+| 其他参数 | 完全相同 | 完全相同 |
+
+| 模型 | val_macro_f1 | 最佳Epoch | val_accuracy | 提升 |
+|------|:---:|:---:|:---:|:---:|
+| ConvNeXt+CBAM (baseline) | 0.6685 | 6 | 0.800 | — |
+| ConvNeXt+CBAM + TTA(5x) | **0.6748** | 15 | 0.833 | **+0.63%** |
+
+**结论**: TTA通过在推理时对验证图像进行5次随机增强并平均预测概率，有效提升了分类稳健性，val_macro_f1提升约0.6%。TTA不影响训练过程，仅改变推理方式，适合作为毕业设计中的模型增强手段。
+
+### A4. 多任务学习实验
+
+| 配置 | 任务数 | val_macro_f1 | 状态 |
+|------|:---:|:---:|:---:|
+| ConvNeXt (baseline) | 1 | **0.6685** | ✅ 最佳 |
+| ConvNeXt + 25任务 | 25 | 0.400 | ❌ 完全坍缩 |
+| ConvNeXt + 5任务(sc. stenosis) | 5 | 0.458 | ⚠️ 收敛受阻 |
+
+**结论**: 多任务学习在此数据集上未能带来收益。25个任务同时优化导致梯度相互冲突，模型快速坍缩为预测多数类（Normal/Mild）。类别不平衡（~80% Normal/Mild）和小样本量是主要障碍。
+
+### A5. 所有实验汇总
 
 | 实验 | 模型 | val_macro_f1 | 结论 |
 |------|------|:---:|------|
