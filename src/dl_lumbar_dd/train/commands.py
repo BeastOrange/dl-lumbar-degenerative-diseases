@@ -9,6 +9,7 @@ from typing import Any
 import yaml
 
 from dl_lumbar_dd.config import load_yaml
+from dl_lumbar_dd.constants import TARGET_COLUMNS
 from dl_lumbar_dd.models import create_model
 from dl_lumbar_dd.train.config import TrainingConfig
 from dl_lumbar_dd.train.data import build_dataloaders
@@ -22,11 +23,16 @@ def run_training(config_path: str | Path) -> dict[str, Any]:
     raw_config = load_yaml(config_path)
     training_config = _build_training_config(raw_config)
     set_global_seed(training_config.seed)
+
+    stratify_col = _get_stratify_column(raw_config)
+    target_columns_cfg = _get_target_columns(raw_config)
+    num_tasks = len(target_columns_cfg) if target_columns_cfg else 1
+
     train_loader, validation_loader = build_dataloaders(
         dataset_root=str(raw_config["dataset_root"]),
         processed_root=str(raw_config["processed_root"]),
-        target_column=str(raw_config.get("target_column", "spinal_canal_stenosis_l4_l5")),
-        image_size=int(raw_config.get("image_size", 224)),
+        target_column=stratify_col,
+        image_size=training_config.image_size,
         batch_size=training_config.batch_size,
         num_workers=training_config.num_workers,
         seed=training_config.seed,
@@ -38,6 +44,7 @@ def run_training(config_path: str | Path) -> dict[str, Any]:
         sampler_mode=training_config.sampler_mode,
         overfit_subset_size=training_config.overfit_subset_size,
         train_augment_mode=training_config.train_augment_mode,
+        target_columns=target_columns_cfg,
     )
     model = create_model(
         model_name=training_config.model_name,
@@ -47,6 +54,7 @@ def run_training(config_path: str | Path) -> dict[str, Any]:
         in_channels=int(raw_config.get("in_channels", 1)),
         dropout=float(raw_config.get("dropout", 0.2)),
         image_size=training_config.image_size,
+        num_tasks=num_tasks,
     )
     trainer = Trainer(model=model, config=training_config)
     result = trainer.fit(train_loader=train_loader, val_loader=validation_loader)
@@ -61,11 +69,39 @@ def run_training(config_path: str | Path) -> dict[str, Any]:
         "history_plot": str(history_plot),
         "model_name": training_config.model_name,
         "fusion_enabled": training_config.fusion_enabled,
+        "num_tasks": num_tasks,
     }
     if result.predictions_csv is not None:
         summary["predictions_csv"] = str(result.predictions_csv)
     write_json(summary, result.run_dir / "run_summary.json")
     return summary
+
+
+def _get_stratify_column(raw_config: dict[str, Any]) -> str:
+    """Get the column used for stratified splitting. Used as single-task fallback."""
+    return str(raw_config.get("target_column", "spinal_canal_stenosis_l4_l5"))
+
+
+def _get_target_columns(raw_config: dict[str, Any]) -> list[str] | None:
+    """Parse target_columns from config.
+
+    Supports three forms:
+      - null / "single": single-task mode (target_column used)
+      - "all": all 25 TARGET_COLUMNS (multi-task)
+      - [col1, col2, ...]: explicit list
+    """
+    value = raw_config.get("target_columns", None)
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value_lower = value.strip().lower()
+        if value_lower in ("", "null", "single"):
+            return None
+        if value_lower == "all":
+            return list(TARGET_COLUMNS)
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    return None
 
 
 def _build_training_config(config: dict[str, Any]) -> TrainingConfig:

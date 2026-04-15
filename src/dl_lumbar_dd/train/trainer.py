@@ -53,9 +53,12 @@ class Trainer:
         self.model = model.to(self.device)
         self.optimizer = self._build_optimizer()
         self.scheduler = self._build_scheduler()
-        self.criterion: nn.Module = nn.CrossEntropyLoss()
+        # criterion will be built in fit() after we know the dataset size
+        self.criterion: nn.Module | list[nn.Module] | None = None
         self.scaler = torch.amp.GradScaler("cuda", enabled=config.amp and self.device.type == "cuda")
         self.run_dir = self._create_run_dir()
+        # Detect multi-task mode from model's num_tasks attribute
+        self.num_tasks = getattr(self.model, "num_tasks", 1)
 
     def fit(self, train_loader: DataLoader[Any], val_loader: DataLoader[Any]) -> TrainingResult:
         best_score = float("-inf")
@@ -117,14 +120,22 @@ class Trainer:
             autocast_context = self._autocast_context()
             with grad_context, autocast_context:
                 logits = self.model(inputs)
-                loss = self.criterion(logits, labels)
+                loss = self._compute_loss(logits, labels)
             if training:
                 self.optimizer.zero_grad(set_to_none=True)
                 self._backward_step(loss)
             losses.append(float(loss.detach().cpu()))
-            probabilities = torch.softmax(logits.detach(), dim=1)
+            # Flatten for single-task metrics; multi-task uses task-0 for quick monitoring
+            if logits.ndim == 3:
+                # Multi-task: (batch, num_tasks, num_classes) → use first task
+                task0_logits = logits[:, 0, :]
+                task0_labels = labels[:, 0]
+            else:
+                task0_logits = logits
+                task0_labels = labels
+            probabilities = torch.softmax(task0_logits.detach(), dim=1)
             predictions.extend(probabilities.argmax(dim=1).cpu().tolist())
-            targets.extend(labels.detach().cpu().tolist())
+            targets.extend(task0_labels.detach().cpu().tolist())
             if collect_scores:
                 scores.extend(probabilities.cpu().tolist())
             progress.set_postfix(loss=f"{sum(losses) / len(losses):.4f}")
@@ -147,6 +158,22 @@ class Trainer:
             raise ValueError("Batch must provide inputs and labels")
         return inputs.to(self.device), labels.to(self.device)
 
+    def _compute_loss(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """Compute loss for single-task or multi-task mode."""
+        if self.num_tasks == 1:
+            criteria = self.criterion
+            assert criteria is not None
+            return criteria(logits, labels)
+        # Multi-task: one loss per task
+        criteria = self.criterion
+        assert isinstance(criteria, list)
+        total_loss = torch.tensor(0.0, device=logits.device)
+        for task_idx, crit in enumerate(criteria):
+            task_logits = logits[:, task_idx, :]      # (batch, num_classes)
+            task_labels = labels[:, task_idx]          # (batch,)
+            total_loss = total_loss + crit(task_logits, task_labels)
+        return total_loss
+
     def _backward_step(self, loss: torch.Tensor) -> None:
         if self.scaler.is_enabled():
             self.scaler.scale(loss).backward()
@@ -161,7 +188,8 @@ class Trainer:
             return nullcontext()
         return torch.autocast(device_type="cuda", dtype=torch.float16)
 
-    def _build_criterion(self, train_loader: DataLoader[Any]) -> nn.Module:
+    def _build_criterion(self, train_loader: DataLoader[Any]) -> nn.Module | list[nn.Module]:
+        """Build loss function(s). Returns a single Module for single-task, list for multi-task."""
         loss_name = getattr(self.config, "loss_name", "cross_entropy").strip().lower()
         mode = (self.config.class_weight_mode or "").strip().lower()
         ls = float(getattr(self.config, "label_smoothing", 0.0))
@@ -174,30 +202,32 @@ class Trainer:
                 )
             if mode:
                 raise ValueError("focal loss does not support class_weight_mode")
-            return FocalLoss(gamma=float(getattr(self.config, "focal_gamma", 2.0)))
-
-        if loss_name not in {"", "cross_entropy"}:
+            single = FocalLoss(gamma=float(getattr(self.config, "focal_gamma", 2.0)))
+        elif loss_name in {"", "cross_entropy"}:
+            if not mode and ls <= 0.0:
+                single = nn.CrossEntropyLoss()
+            elif mode and ls > 0.0:
+                weights = self._build_balanced_class_weights(train_loader)
+                single = nn.CrossEntropyLoss(
+                    label_smoothing=ls,
+                    weight=(weights.to(device=self.device, dtype=torch.float32) if weights is not None else None),
+                )
+            elif ls > 0.0:
+                single = nn.CrossEntropyLoss(label_smoothing=ls)
+            elif mode == "balanced":
+                weights = self._build_balanced_class_weights(train_loader)
+                single = nn.CrossEntropyLoss(
+                    weight=weights.to(device=self.device, dtype=torch.float32) if weights is not None else None
+                )
+            else:
+                raise ValueError(f"Unsupported class_weight_mode: {self.config.class_weight_mode}")
+        else:
             raise ValueError(f"Unsupported loss_name: {getattr(self.config, 'loss_name', None)}")
 
-        if not mode and ls <= 0.0:
-            return nn.CrossEntropyLoss()
-
-        if mode and ls > 0.0:
-            weights = self._build_balanced_class_weights(train_loader)
-            return nn.CrossEntropyLoss(
-                label_smoothing=ls,
-                weight=(weights.to(device=self.device, dtype=torch.float32) if weights is not None else None),
-            )
-
-        if ls > 0.0:
-            return nn.CrossEntropyLoss(label_smoothing=ls)
-
-        if mode != "balanced":
-            raise ValueError(f"Unsupported class_weight_mode: {self.config.class_weight_mode}")
-        weights = self._build_balanced_class_weights(train_loader)
-        if weights is None:
-            return nn.CrossEntropyLoss()
-        return nn.CrossEntropyLoss(weight=weights.to(device=self.device, dtype=torch.float32))
+        if self.num_tasks == 1:
+            return single
+        # Multi-task: one criterion per task (sharing the same config)
+        return [single for _ in range(self.num_tasks)]
 
     def _build_balanced_class_weights(self, train_loader: DataLoader[Any]) -> torch.Tensor | None:
         label_indices = self._extract_label_indices(train_loader.dataset)

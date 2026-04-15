@@ -303,7 +303,7 @@ def test_prepare_bundle_and_manifests_reuses_matching_cache_and_rebuilds_on_targ
     meta_path.write_text(
         json.dumps(
             {
-                "version": 2,
+                "version": 3,
                 "target_column": "spinal_canal_stenosis_l4_l5",
                 "seed": 7,
                 "folds": 3,
@@ -367,7 +367,7 @@ def test_prepare_bundle_and_manifests_reuses_matching_cache_and_rebuilds_on_targ
     assert build_split_calls == ["called"]
 
     refreshed_meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    assert refreshed_meta["version"] == 2
+    assert refreshed_meta["version"] == 3
     assert refreshed_meta["target_column"] == "left_subarticular_stenosis_l4_l5"
 
 
@@ -436,14 +436,13 @@ def test_lumbar_study_dataset_raises_for_missing_or_unknown_target_label(tmp_pat
         ),
     )
 
-    try:
-        train_data.LumbarStudyDataset(
-            manifest,
-            bundle=bundle,
-            target_column="spinal_canal_stenosis_l4_l5",
-            image_size=224,
-        )
-    except ValueError as error:
-        assert "Unsupported target label" in str(error)
-    else:
-        raise AssertionError("LumbarStudyDataset should reject missing or unknown target labels")
+    # Missing labels are treated as "Normal/Mild" (index 0) — no exception raised
+    dataset = train_data.LumbarStudyDataset(
+        manifest,
+        bundle=bundle,
+        target_column="spinal_canal_stenosis_l4_l5",
+        image_size=224,
+    )
+    # study_id 102 had "Missing" label → resolved to index 0 (Normal/Mild)
+    assert dataset.label_indices[0] == 0  # study 101: Normal/Mild
+    assert dataset.label_indices[1] == 0  # study 102: Missing → Normal/Mild

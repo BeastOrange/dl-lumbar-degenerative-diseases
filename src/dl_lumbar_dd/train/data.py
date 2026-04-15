@@ -19,16 +19,22 @@ from dl_lumbar_dd.utils.io import ensure_dir
 
 
 class LumbarStudyDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
-    """Dataset that builds one three-view sample per study."""
+    """Dataset that builds one three-view sample per study.
+
+    Supports both single-task (one label per study) and multi-task
+    (25 labels per study, one per condition) modes.
+    """
 
     def __init__(
         self,
         manifest: pd.DataFrame,
         bundle: RSNATables,
-        target_column: str,
         image_size: int,
         max_samples: int | None = None,
         augment_mode: str | None = None,
+        target_columns: list[str] | None = None,
+        # Backward-compat: single target_column (str) is promoted to single-item list
+        target_column: str | None = None,
     ) -> None:
         self.dataset_root = bundle.dataset_root
         self.series_table = bundle.series
@@ -38,24 +44,45 @@ class LumbarStudyDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         if max_samples is not None:
             records = records.head(max_samples)
         self.study_ids = records["study_id"].astype(int).tolist()
-        self.labels = bundle.train.set_index("study_id")[target_column].to_dict()
-        self.label_indices = [self._resolve_label_index(study_id) for study_id in self.study_ids]
+        # Resolve: explicit list wins; single-column string promoted to list
+        if target_columns is not None:
+            self.target_columns = target_columns
+        elif target_column is not None:
+            self.target_columns = [target_column]
+        else:
+            self.target_columns = None
+        self._load_labels(bundle)
+
+    def _load_multi_task_labels(
+        self, bundle: RSNATables, target_columns: list[str]
+    ) -> list[list[int]]:
+        """Load all target columns and resolve to label indices per study."""
+        label_df = bundle.train.set_index("study_id")[target_columns]
+        indices: list[list[int]] = []
+        for study_id in self.study_ids:
+            row_indices: list[int] = []
+            for col in target_columns:
+                severity = label_df.at[study_id, col]
+                if pd.isna(severity):
+                    severity = "Normal/Mild"  # treat missing as normal
+                row_indices.append(SEVERITY_TO_INDEX.get(str(severity), 0))
+            indices.append(row_indices)
+        return indices
+
+    def _load_labels(self, bundle: RSNATables) -> None:
+        """Populate self.label_indices for single-task or multi-task mode."""
+        if self.target_columns is None:
+            self.label_indices = []
+            return
+        raw = self._load_multi_task_labels(bundle, self.target_columns)
+        # Flatten to list[int] when single-task for backward compat
+        if len(self.target_columns) == 1:
+            self.label_indices = [item[0] for item in raw]
+        else:
+            self.label_indices = raw
 
     def __len__(self) -> int:
         return len(self.study_ids)
-
-    @staticmethod
-    def _severity_to_index(severity: object) -> int:
-        return SEVERITY_TO_INDEX.get(str(severity), 0)
-
-    def _resolve_label_index(self, study_id: int) -> int:
-        severity = self.labels.get(study_id)
-        if severity is None:
-            raise ValueError(f"Missing target label for study_id={study_id}")
-        severity_key = str(severity)
-        if severity_key not in SEVERITY_TO_INDEX:
-            raise ValueError(f"Unsupported target label for study_id={study_id}: {severity_key}")
-        return SEVERITY_TO_INDEX[severity_key]
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
         study_id = self.study_ids[index]
@@ -66,7 +93,6 @@ class LumbarStudyDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
             image_size=self.image_size,
         )
         label = self.label_indices[index]
-        # 输出 [view, channel, height, width]，匹配融合模块的 5D 输入约定
         tensor = torch.from_numpy(image).unsqueeze(1).to(dtype=torch.float32)
         tensor = self._apply_augmentation(tensor)
         return tensor, torch.tensor(label, dtype=torch.long)
@@ -138,7 +164,7 @@ def prepare_bundle_and_manifests(
     validation_manifest = root / "validation_manifest.csv"
     manifest_meta = root / "split_manifest_meta.json"
     cache_key = {
-        "version": 2,
+        "version": 3,
         "target_column": target_column,
         "seed": seed,
         "folds": folds,
@@ -179,8 +205,16 @@ def build_dataloaders(
     sampler_mode: str | None = None,
     overfit_subset_size: int | None = None,
     train_augment_mode: str | None = None,
+    target_columns: list[str] | None = None,
 ) -> tuple[DataLoader[tuple[torch.Tensor, torch.Tensor]], DataLoader[tuple[torch.Tensor, torch.Tensor]]]:
-    """Build train/validation dataloaders with study-level manifests."""
+    """Build train/validation dataloaders with study-level manifests.
+
+    Args:
+        target_column: Single column name used for stratified splitting.
+        target_columns: List of column names for multi-task learning.
+            When provided, the dataset returns labels of shape (num_tasks,).
+            When None, single-task mode is used (backward compatible).
+    """
     bundle, train_path, validation_path = prepare_bundle_and_manifests(
         dataset_root=dataset_root,
         processed_root=processed_root,
@@ -199,18 +233,20 @@ def build_dataloaders(
     train_dataset = LumbarStudyDataset(
         train_manifest,
         bundle=bundle,
-        target_column=target_column,
         image_size=image_size,
         max_samples=max_train_samples,
         augment_mode=train_augment_mode,
+        target_columns=target_columns,
+        target_column=target_column,
     )
     validation_dataset = LumbarStudyDataset(
         validation_manifest,
         bundle=bundle,
-        target_column=target_column,
         image_size=image_size,
         max_samples=max_val_samples,
         augment_mode=None,
+        target_columns=target_columns,
+        target_column=target_column,
     )
     common_loader_args = {
         "batch_size": batch_size,
@@ -240,9 +276,16 @@ def _build_train_sampler(
     if mode != "balanced":
         raise ValueError(f"Unsupported sampler_mode: {sampler_mode}")
 
-    class_counts = Counter(int(label) for label in dataset.label_indices)
+    # Multi-task: use the first task's labels for balancing
+    first = dataset.label_indices[0]
+    if isinstance(first, list):
+        labels_for_sampler = [item[0] for item in dataset.label_indices]
+    else:
+        labels_for_sampler = dataset.label_indices
+
+    class_counts = Counter(int(label) for label in labels_for_sampler)
     weights = torch.tensor(
-        [1.0 / class_counts[int(label)] for label in dataset.label_indices],
+        [1.0 / class_counts[int(label)] for label in labels_for_sampler],
         dtype=torch.double,
     )
     generator = torch.Generator()

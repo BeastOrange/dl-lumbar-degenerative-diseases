@@ -30,6 +30,8 @@ class TrainingConfig:
     early_stopping_patience: int | None = None
     train_augment_mode: str | None = None
     label_smoothing: float = 0.0
+    # Multi-task: list of target column names (None = single-task mode)
+    target_columns: list[str] | None = None
 
 
 @dataclass(slots=True)

@@ -20,6 +20,7 @@ class ModelSpec:
     in_channels: int = 3
     dropout: float = 0.2
     image_size: int | None = 64
+    num_tasks: int = 1  # 1 = single-task, >1 = multi-task with N heads
 
 
 class _ImagenetNormalize(nn.Module):
@@ -53,14 +54,23 @@ class LumbarModel(nn.Module):
         self.fusion = MultiViewFusionAdapter(self.encoder.feature_dim) if spec.fusion_enabled else None
         self.norm = nn.LayerNorm(self.encoder.feature_dim)
         self.dropout = nn.Dropout(spec.dropout)
-        self.head = nn.Linear(self.encoder.feature_dim, spec.num_classes)
+        self.num_tasks = spec.num_tasks
+        self.num_classes = spec.num_classes
+        # Multi-task: one head per task; single-task: one shared head
+        self.heads = nn.ModuleList([
+            nn.Linear(self.encoder.feature_dim, spec.num_classes)
+            for _ in range(spec.num_tasks)
+        ])
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         views = self._prepare_views(inputs)
         features = torch.stack([self.encoder(view) for view in views], dim=1)
         pooled = self.fusion(features) if self.fusion is not None and features.size(1) > 1 else features.mean(dim=1)
         pooled = self.dropout(self.norm(pooled))
-        return self.head(pooled)
+        if self.num_tasks == 1:
+            return self.heads[0](pooled)
+        # Multi-task: stack logits from all heads → (batch, num_tasks, num_classes)
+        return torch.stack([head(pooled) for head in self.heads], dim=1)
 
     def _prepare_views(self, inputs: torch.Tensor) -> list[torch.Tensor]:
         if inputs.ndim == 4:
@@ -82,6 +92,7 @@ def create_model(
     in_channels: int = 3,
     dropout: float = 0.2,
     image_size: int | None = 64,
+    num_tasks: int = 1,
 ) -> nn.Module:
     if model_name not in BACKBONE_FACTORIES:
         raise ValueError(f"Unsupported model_name: {model_name}")
@@ -93,5 +104,6 @@ def create_model(
         in_channels=in_channels,
         dropout=dropout,
         image_size=image_size,
+        num_tasks=num_tasks,
     )
     return LumbarModel(spec)
