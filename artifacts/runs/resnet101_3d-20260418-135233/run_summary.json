@@ -1,0 +1,12 @@
+{
+  "run_dir": "artifacts/runs/resnet101_3d-20260418-135233",
+  "best_checkpoint": "artifacts/runs/resnet101_3d-20260418-135233/best.ckpt",
+  "best_epoch": 3,
+  "metrics_csv": "artifacts/runs/resnet101_3d-20260418-135233/metrics.csv",
+  "history_json": "artifacts/runs/resnet101_3d-20260418-135233/history.json",
+  "history_plot": "artifacts/runs/resnet101_3d-20260418-135233/history_train_metrics.png",
+  "model_name": "resnet101_3d",
+  "fusion_enabled": true,
+  "num_tasks": 1,
+  "predictions_csv": "artifacts/runs/resnet101_3d-20260418-135233/predictions.csv"
+}

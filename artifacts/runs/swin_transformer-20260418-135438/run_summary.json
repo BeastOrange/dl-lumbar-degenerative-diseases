@@ -1,0 +1,12 @@
+{
+  "run_dir": "artifacts/runs/swin_transformer-20260418-135438",
+  "best_checkpoint": "artifacts/runs/swin_transformer-20260418-135438/best.ckpt",
+  "best_epoch": 2,
+  "metrics_csv": "artifacts/runs/swin_transformer-20260418-135438/metrics.csv",
+  "history_json": "artifacts/runs/swin_transformer-20260418-135438/history.json",
+  "history_plot": "artifacts/runs/swin_transformer-20260418-135438/history_train_metrics.png",
+  "model_name": "swin_transformer",
+  "fusion_enabled": true,
+  "num_tasks": 1,
+  "predictions_csv": "artifacts/runs/swin_transformer-20260418-135438/predictions.csv"
+}

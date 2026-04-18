@@ -1,0 +1,12 @@
+{
+  "run_dir": "artifacts/runs/vit_base_posenc-20260418-135634",
+  "best_checkpoint": "artifacts/runs/vit_base_posenc-20260418-135634/best.ckpt",
+  "best_epoch": 9,
+  "metrics_csv": "artifacts/runs/vit_base_posenc-20260418-135634/metrics.csv",
+  "history_json": "artifacts/runs/vit_base_posenc-20260418-135634/history.json",
+  "history_plot": "artifacts/runs/vit_base_posenc-20260418-135634/history_train_metrics.png",
+  "model_name": "vit_base_posenc",
+  "fusion_enabled": true,
+  "num_tasks": 1,
+  "predictions_csv": "artifacts/runs/vit_base_posenc-20260418-135634/predictions.csv"
+}

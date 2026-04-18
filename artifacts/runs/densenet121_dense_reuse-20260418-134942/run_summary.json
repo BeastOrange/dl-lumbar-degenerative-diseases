@@ -1,0 +1,12 @@
+{
+  "run_dir": "artifacts/runs/densenet121_dense_reuse-20260418-134942",
+  "best_checkpoint": "artifacts/runs/densenet121_dense_reuse-20260418-134942/best.ckpt",
+  "best_epoch": 6,
+  "metrics_csv": "artifacts/runs/densenet121_dense_reuse-20260418-134942/metrics.csv",
+  "history_json": "artifacts/runs/densenet121_dense_reuse-20260418-134942/history.json",
+  "history_plot": "artifacts/runs/densenet121_dense_reuse-20260418-134942/history_train_metrics.png",
+  "model_name": "densenet121_dense_reuse",
+  "fusion_enabled": true,
+  "num_tasks": 1,
+  "predictions_csv": "artifacts/runs/densenet121_dense_reuse-20260418-134942/predictions.csv"
+}
