@@ -1,0 +1,26 @@
+[
+  {
+    "run_id": "convnext_tiny_cbam-20260409-032943",
+    "model_name": "convnext_tiny_cbam",
+    "fusion_enabled": true,
+    "best_epoch": 1,
+    "primary_metric": "val_macro_f1",
+    "primary_score": 0.42857142857142855,
+    "final_val_macro_f1": 0.42857142857142855,
+    "final_val_macro_auc": null,
+    "final_val_accuracy": 0.75,
+    "run_dir": "artifacts/runs/convnext_tiny_cbam-20260409-032943"
+  },
+  {
+    "run_id": "convnext_tiny_cbam-20260409-033348",
+    "model_name": "convnext_tiny_cbam",
+    "fusion_enabled": true,
+    "best_epoch": 1,
+    "primary_metric": "val_macro_f1",
+    "primary_score": 0.42857142857142855,
+    "final_val_macro_f1": 0.42857142857142855,
+    "final_val_macro_auc": null,
+    "final_val_accuracy": 0.75,
+    "run_dir": "artifacts/runs/convnext_tiny_cbam-20260409-033348"
+  }
+]

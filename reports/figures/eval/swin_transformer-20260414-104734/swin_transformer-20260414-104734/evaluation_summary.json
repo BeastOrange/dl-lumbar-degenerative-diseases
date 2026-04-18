@@ -1,0 +1,34 @@
+{
+  "run_id": "swin_transformer-20260414-104734",
+  "run_dir": "artifacts/runs/swin_transformer-20260414-104734",
+  "best_epoch": 15,
+  "best_metric_name": "val_macro_f1",
+  "best_metric_value": 0.523068674660208,
+  "final_metrics": {
+    "epoch": 20.0,
+    "lr": 1.846748910729352e-06,
+    "train_macro_f1": 0.9170806875780056,
+    "train_accuracy": 0.9176694110196328,
+    "train_recall_class_0": 0.8590476190476191,
+    "train_pred_rate_0": 0.2995566814439518,
+    "train_recall_class_1": 0.9205426356589148,
+    "train_pred_rate_1": 0.350221659278024,
+    "train_recall_class_2": 0.9721189591078068,
+    "train_pred_rate_2": 0.350221659278024,
+    "train_loss": 0.242018432021141,
+    "val_macro_f1": 0.4671039566665292,
+    "val_accuracy": 0.7063291139240506,
+    "val_recall_class_0": 0.8518518518518519,
+    "val_pred_rate_0": 0.739240506329114,
+    "val_recall_class_1": 0.2765957446808511,
+    "val_pred_rate_1": 0.189873417721519,
+    "val_recall_class_2": 0.2549019607843137,
+    "val_pred_rate_2": 0.070886075949367,
+    "val_loss": 1.0929279602490938
+  },
+  "outputs": [
+    "reports/figures/eval/swin_transformer-20260414-104734/swin_transformer-20260414-104734/training_history.png",
+    "reports/figures/eval/swin_transformer-20260414-104734/swin_transformer-20260414-104734/confusion_matrix.png",
+    "reports/figures/eval/swin_transformer-20260414-104734/swin_transformer-20260414-104734/roc_ovr.png"
+  ]
+}

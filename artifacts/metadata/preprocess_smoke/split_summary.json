@@ -1,0 +1,23 @@
+{
+  "seed": 42,
+  "folds": 3,
+  "train_count": 19,
+  "validation_count": 5,
+  "fold_summary": [
+    {
+      "fold": 0,
+      "train_count": 16,
+      "validation_count": 8
+    },
+    {
+      "fold": 1,
+      "train_count": 16,
+      "validation_count": 8
+    },
+    {
+      "fold": 2,
+      "train_count": 16,
+      "validation_count": 8
+    }
+  ]
+}

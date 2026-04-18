@@ -1,0 +1,2 @@
+epoch,lr,train_macro_f1,train_accuracy,train_recall_class_0,train_pred_rate_0,train_recall_class_1,train_pred_rate_1,train_recall_class_2,train_pred_rate_2,train_loss,val_macro_f1,val_accuracy,val_recall_class_0,val_pred_rate_0,val_recall_class_1,val_pred_rate_1,val_recall_class_2,val_pred_rate_2,val_loss
+1,0.0003,0.25641025641025644,0.625,0.8333333333333334,0.875,0.0,0.125,0.0,0.0,2.5669899538261234,1.0,1.0,1.0,1.0,0.0,0.0,0.0,0.0,0.06633050739765167

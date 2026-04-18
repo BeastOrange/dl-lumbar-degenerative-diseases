@@ -1,0 +1,34 @@
+{
+  "run_id": "vit_base_posenc-20260414-111046",
+  "run_dir": "artifacts/runs/vit_base_posenc-20260414-111046",
+  "best_epoch": 20,
+  "best_metric_name": "val_macro_f1",
+  "best_metric_value": 0.3415383023804852,
+  "final_metrics": {
+    "epoch": 20.0,
+    "lr": 1.846748910729352e-06,
+    "train_macro_f1": 0.6577286252932268,
+    "train_accuracy": 0.6586447118429386,
+    "train_recall_class_0": 0.758095238095238,
+    "train_pred_rate_0": 0.2818239392020266,
+    "train_recall_class_1": 0.7887596899224806,
+    "train_pred_rate_1": 0.4724509183027232,
+    "train_recall_class_2": 0.4368029739776952,
+    "train_pred_rate_2": 0.2457251424952501,
+    "train_loss": 0.7406554162502289,
+    "val_macro_f1": 0.3415383023804852,
+    "val_accuracy": 0.5443037974683544,
+    "val_recall_class_0": 0.6666666666666666,
+    "val_pred_rate_0": 0.6506329113924051,
+    "val_recall_class_1": 0.1276595744680851,
+    "val_pred_rate_1": 0.2278481012658227,
+    "val_recall_class_2": 0.2156862745098039,
+    "val_pred_rate_2": 0.1215189873417721,
+    "val_loss": 1.1387115716934204
+  },
+  "outputs": [
+    "reports/figures/eval/vit_base_posenc-20260414-111046/vit_base_posenc-20260414-111046/training_history.png",
+    "reports/figures/eval/vit_base_posenc-20260414-111046/vit_base_posenc-20260414-111046/confusion_matrix.png",
+    "reports/figures/eval/vit_base_posenc-20260414-111046/vit_base_posenc-20260414-111046/roc_ovr.png"
+  ]
+}

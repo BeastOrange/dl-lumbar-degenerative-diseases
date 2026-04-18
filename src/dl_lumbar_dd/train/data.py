@@ -260,11 +260,14 @@ def build_dataloaders(
         target_columns=target_columns,
         target_column=target_column,
     )
-    common_loader_args = {
+    common_loader_args: dict[str, object] = {
         "batch_size": batch_size,
         "num_workers": num_workers,
         "pin_memory": torch.cuda.is_available(),
+        "persistent_workers": num_workers > 0,
     }
+    if num_workers > 0:
+        common_loader_args["prefetch_factor"] = 2
     train_sampler = _build_train_sampler(train_dataset, sampler_mode=sampler_mode, seed=seed)
     train_loader = DataLoader(
         train_dataset,

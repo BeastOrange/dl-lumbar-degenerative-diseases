@@ -1,0 +1,9 @@
+{
+  "run_dir": "artifacts/runs/convnext_tiny_cbam-20260412-073625",
+  "best_checkpoint": "artifacts/runs/convnext_tiny_cbam-20260412-073625/best.ckpt",
+  "metrics_csv": "artifacts/runs/convnext_tiny_cbam-20260412-073625/metrics.csv",
+  "history_json": "artifacts/runs/convnext_tiny_cbam-20260412-073625/history.json",
+  "history_plot": "artifacts/runs/convnext_tiny_cbam-20260412-073625/history_train_metrics.png",
+  "model_name": "convnext_tiny_cbam",
+  "fusion_enabled": true
+}

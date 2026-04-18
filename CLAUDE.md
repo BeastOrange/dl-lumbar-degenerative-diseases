@@ -43,37 +43,38 @@ uv run pytest tests/train/test_trainer.py -v
 
 ```
 src/dl_lumbar_dd/
-├── cli.py                  # Entry point; routes subcommands to handlers
+├── cli.py                  # Entry point (lumbar-cli); routes subcommands to handlers
 ├── config.py               # load_yaml() — single YAML loader used everywhere
 ├── constants.py            # TARGET_COLUMNS (25 conditions), SERIES_TYPES, label mappings
-├── data/
-│   ├── commands.py        # run_eda(), run_preprocess() — top-level data workflow
-│   ├── dicom.py            # build_three_view_tensor() — reads middle DICOM slice per view
-│   ├── ingest.py           # load_rsna_tables(), build_study_index() — reads 3 RSNA CSVs
-│   ├── reporting.py        # generate_eda_reports(), generate_preprocess_reports()
-│   └── splits.py           # build_split_manifests() — StratifiedKFold study-level splits
-├── models/
-│   ├── backbones.py        # BACKBONE_FACTORIES: 5 model architectures + helper classes
-│   ├── blocks.py           # CBAM, DenseReuseProjection, FeatureVolume3D, HierarchicalFeatureFusion, MultiViewFusionAdapter
-│   └── registry.py         # create_model(), available_models(), LumbarModel class
-├── train/
-│   ├── commands.py         # run_training() — loads YAML → builds dataloaders → trains → persists artifacts
-│   ├── config.py           # TrainingConfig (dataclass), TrainingResult (dataclass)
-│   ├── data.py             # LumbarStudyDataset, build_dataloaders(), prepare_bundle_and_manifests()
-│   ├── metrics.py          # classification_metrics(), metric_row() — F1/precision/recall/kappa
-│   └── trainer.py          # Trainer class — PyTorch loop with AMP, early stopping, focal loss
-├── eval/
-│   ├── commands.py         # run_evaluation(), run_comparison()
-│   ├── comparison.py       # build_ranking_table(), save_ranking_table()
-│   └── metrics.py          # eval_metrics() — sklearn wrappers
-├── visualization/
-│   ├── __init__.py
-│   └── plots.py            # save_training_history, save_confusion_matrix, save_multiclass_roc
-└── utils/
-    └── io.py               # ensure_dir(), write_json()
+├── data/                   # DICOM loading, EDA, preprocessing, study-level splits
+├── models/                 # Backbone encoders, custom blocks, LumbarModel registry
+├── train/                  # Training loop, dataset, config dataclasses, metrics
+├── eval/                   # Evaluation, cross-run comparison and ranking
+├── visualization/          # Confusion matrix, ROC curves, training history plots
+└── utils/                  # File I/O helpers
 
-apps/streamlit/             # Streamlit UI (6 pages)
+apps/streamlit/             # Streamlit UI (6 pages: Home, Data Explorer, Data Analysis,
+                            #   Preprocessing QA, Training Dashboard, Model Comparison,
+                            #   Inference & Explainability)
 ```
+
+## Model Architecture
+
+**LumbarModel** (in `models/registry.py`) pipeline:
+Input (batch, 3 views, 1, H, W) → per-view: grayscale→RGB adapter → ImageNet normalize → backbone encoder → stack view features → MultiViewFusionAdapter (learned attention weights, if enabled) or mean pool → LayerNorm → Dropout → classification head(s).
+
+- **Single-task:** 1 linear head → (batch, num_classes)
+- **Multi-task:** N linear heads (one per condition) → (batch, num_tasks, num_classes)
+
+### Five Backbone Architectures
+
+| Registry Key | Base Model | Custom Block | feature_dim |
+|---|---|---|---|
+| `convnext_tiny_cbam` | ConvNeXt-Tiny | CBAM (channel + spatial attention) | 768 |
+| `densenet121_dense_reuse` | DenseNet-121 | DenseReuseProjection | 1024 |
+| `resnet101_3d` | ResNet-101 | FeatureVolume3D (reshape to 3D volume + Conv3d) | 2048 |
+| `swin_transformer` | Swin-T | HierarchicalFeatureFusion (local + global branches) | 768 |
+| `vit_base_posenc` | ViT-B/16 | None (pure ViT) | 768 |
 
 ## Key Data Flows
 
@@ -81,15 +82,36 @@ apps/streamlit/             # Streamlit UI (6 pages)
 
 **Training:** YAML config → `TrainingConfig` → `build_dataloaders()` → `LumbarStudyDataset` (loads middle DICOM slice per view, stacks 3 views as channels) → `Trainer.fit()` → saves `best.ckpt`, `metrics.csv`, `history.json`, `predictions.csv` under `artifacts/runs/<run-id>/`
 
-**Model architecture:** LumbarModel wraps a backbone encoder + grayscale-to-RGB adapter + ImageNet normalizer + (optional) MultiViewFusionAdapter for multi-view weighting + linear head. Five backbones registered in BACKBONE_FACTORIES.
+## Training Features
+
+**Loss functions:** `cross_entropy` (with optional `label_smoothing` and `class_weight_mode=balanced`) or `focal` (configurable `focal_gamma`, default 2.0). Focal loss is incompatible with label_smoothing and class_weight_mode.
+
+**Multi-task learning:** Set `target_columns: all` for all 25 conditions, or provide an explicit list. Each task gets its own linear head and loss; losses are summed. Task-0 metrics are used for monitoring and early stopping.
+
+**TTA (Test-Time Augmentation):** Set `tta_count` > 1. At validation, averages logits over N augmented views (first view unaugmented).
+
+**Augmentation modes** (`train_augment_mode`):
+- `off`/`null`: No augmentation
+- `light`: Brightness ±5%, contrast ±5%, Gaussian noise (σ=0.003)
+- `medium`: All of light + shared affine (rotation ±10°, scale 0.95–1.05, translate ±2.5%). No flips — preserves left/right foraminal anatomy.
+
+**Other:** AdamW or SGD optimizer, CosineAnnealingLR or StepLR scheduler, AMP (CUDA only), WeightedRandomSampler (`sampler_mode=balanced`), early stopping on val_macro_f1.
 
 ## Label Encoding
 
 `SEVERITY_TO_INDEX` maps: Normal/Mild → 0, Moderate → 1, Severe → 2
 
+25 target conditions = 5 spinal canal stenosis + 10 neural foraminal narrowing (L/R) + 10 subarticular stenosis (L/R), across L1-L2 through L5-S1.
+
 ## Config Structure
 
-Train configs use a flat YAML structure (not nested). The CLI `train` command reads fields directly with `.get()` calls. See `configs/train/default.yaml` for the canonical schema.
+Train configs use a flat YAML structure (not nested). The CLI `train` command reads fields directly with `.get()` calls. See `configs/train/default.yaml` for the canonical schema. Key non-obvious fields: `target_columns` (null=single-task, "all"=25 tasks, or explicit list), `tta_count`, `focal_gamma`, `overfit_subset_size` (shares same subset for train+val).
+
+## Environment Variables
+
+- `LUMBAR_CONVNEXT_TINY_WEIGHTS`: Path to offline ConvNeXt-Tiny weights file
+- `LUMBAR_TQDM`: Controls tqdm progress display
+- `HF_ENDPOINT`: HuggingFace mirror URL (set to hf-mirror.com on Chinese servers)
 
 ## Important Paths
 
@@ -99,4 +121,4 @@ Train configs use a flat YAML structure (not nested). The CLI `train` command re
 
 ## Remote Training
 
-Training runs on a Linux server via `scripts/sync_to_server.sh` and `scripts/server_train.sh`. The server uses the same codebase with local data paths. Run locally first to verify; sync and train remotely for GPU.
+Training runs on a Linux server via `scripts/sync_to_server.sh` and `scripts/server_train.sh`. The server uses the same codebase with local data paths. `sync_to_server.sh` supports `--with-data` to include DICOM images. `server_train.sh` uses nohup background training with PID tracking, Chinese PyPI/HuggingFace mirrors, and `uv` for dependency management. Run locally first to verify; sync and train remotely for GPU.

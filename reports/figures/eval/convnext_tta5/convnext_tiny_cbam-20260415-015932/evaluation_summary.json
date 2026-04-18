@@ -1,0 +1,34 @@
+{
+  "run_id": "convnext_tiny_cbam-20260415-015932",
+  "run_dir": "/root/autodl-tmp/dl-lumbar-degenerative-diseases/artifacts/runs/convnext_tiny_cbam-20260415-015932",
+  "best_epoch": 15,
+  "best_metric_name": "val_macro_f1",
+  "best_metric_value": 0.6748170348170349,
+  "final_metrics": {
+    "epoch": 20.0,
+    "lr": 1.846748910729352e-06,
+    "train_macro_f1": 0.998719084533038,
+    "train_accuracy": 0.9987333755541482,
+    "train_recall_class_0": 0.998095238095238,
+    "train_pred_rate_0": 0.3324889170360988,
+    "train_recall_class_1": 0.998062015503876,
+    "train_pred_rate_1": 0.3267891070297656,
+    "train_recall_class_2": 1.0,
+    "train_pred_rate_2": 0.3407219759341355,
+    "train_loss": 0.0028325992476458,
+    "val_macro_f1": 0.6723705227334752,
+    "val_accuracy": 0.8329113924050633,
+    "val_recall_class_0": 0.9326599326599326,
+    "val_pred_rate_0": 0.7746835443037975,
+    "val_recall_class_1": 0.3829787234042553,
+    "val_pred_rate_1": 0.1063291139240506,
+    "val_recall_class_2": 0.6666666666666666,
+    "val_pred_rate_2": 0.1189873417721519,
+    "val_loss": 1.1247773385047912
+  },
+  "outputs": [
+    "/root/autodl-tmp/dl-lumbar-degenerative-diseases/reports/figures/eval/convnext_tta5/convnext_tiny_cbam-20260415-015932/training_history.png",
+    "/root/autodl-tmp/dl-lumbar-degenerative-diseases/reports/figures/eval/convnext_tta5/convnext_tiny_cbam-20260415-015932/confusion_matrix.png",
+    "/root/autodl-tmp/dl-lumbar-degenerative-diseases/reports/figures/eval/convnext_tta5/convnext_tiny_cbam-20260415-015932/roc_ovr.png"
+  ]
+}

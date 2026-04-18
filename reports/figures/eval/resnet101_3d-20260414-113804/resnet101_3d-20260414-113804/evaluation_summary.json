@@ -1,0 +1,34 @@
+{
+  "run_id": "resnet101_3d-20260414-113804",
+  "run_dir": "artifacts/runs/resnet101_3d-20260414-113804",
+  "best_epoch": 6,
+  "best_metric_name": "val_macro_f1",
+  "best_metric_value": 0.4941709269069633,
+  "final_metrics": {
+    "epoch": 14.0,
+    "lr": 8.190142503906799e-05,
+    "train_macro_f1": 0.9987493128261784,
+    "train_accuracy": 0.9987333755541482,
+    "train_recall_class_0": 0.9980879541108988,
+    "train_pred_rate_0": 0.3305889803673211,
+    "train_recall_class_1": 0.9982078853046596,
+    "train_pred_rate_1": 0.3533882203926535,
+    "train_recall_class_2": 1.0,
+    "train_pred_rate_2": 0.3160227992400253,
+    "train_loss": 0.0108281122148036,
+    "val_macro_f1": 0.3874195444315429,
+    "val_accuracy": 0.769620253164557,
+    "val_recall_class_0": 0.98989898989899,
+    "val_pred_rate_0": 0.9544303797468354,
+    "val_recall_class_1": 0.0,
+    "val_pred_rate_1": 0.0,
+    "val_recall_class_2": 0.196078431372549,
+    "val_pred_rate_2": 0.0455696202531645,
+    "val_loss": 1.918825277915368
+  },
+  "outputs": [
+    "reports/figures/eval/resnet101_3d-20260414-113804/resnet101_3d-20260414-113804/training_history.png",
+    "reports/figures/eval/resnet101_3d-20260414-113804/resnet101_3d-20260414-113804/confusion_matrix.png",
+    "reports/figures/eval/resnet101_3d-20260414-113804/resnet101_3d-20260414-113804/roc_ovr.png"
+  ]
+}

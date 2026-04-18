@@ -19,17 +19,16 @@ __pycache__/
 # Data (keep local only)
 rsna-2024-lumbar-spine-degenerative-classification/
 
-# Generated artifacts
-artifacts/*
-!artifacts/.gitkeep
-reports/figures/*
-!reports/figures/.gitkeep
-
-# Logs
-*.log
-logs/
-
-# Model weights
+# Artifacts: track results but NOT checkpoints or processed data
+artifacts/processed/
+artifacts/logs/
+*.ckpt
 *.pt
 *.pth
 *.onnx
+
+# Logs
+*.log
+
+# Cache
+.cache/

@@ -1,0 +1,22 @@
+{
+  "run_id": "convnext_tiny_cbam-20260412-091953",
+  "run_dir": "artifacts/runs/convnext_tiny_cbam-20260412-091953",
+  "best_epoch": 4,
+  "best_metric_name": "val_macro_f1",
+  "best_metric_value": 0.2805474095796677,
+  "final_metrics": {
+    "epoch": 20.0,
+    "lr": 1.846748910729352e-06,
+    "train_macro_f1": 0.2924137161351525,
+    "train_accuracy": 0.7487341772151899,
+    "train_loss": 1.0971888616831615,
+    "val_macro_f1": 0.2805474095796677,
+    "val_accuracy": 0.7265822784810126,
+    "val_loss": 1.1015898942947389
+  },
+  "outputs": [
+    "reports/figures/eval/convnext_tiny_cbam-20260412-091953/training_history.png",
+    "reports/figures/eval/convnext_tiny_cbam-20260412-091953/confusion_matrix.png",
+    "reports/figures/eval/convnext_tiny_cbam-20260412-091953/roc_ovr.png"
+  ]
+}
