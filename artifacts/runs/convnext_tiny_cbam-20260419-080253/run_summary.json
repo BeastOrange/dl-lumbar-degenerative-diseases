@@ -1,0 +1,12 @@
+{
+  "run_dir": "artifacts/runs/convnext_tiny_cbam-20260419-080253",
+  "best_checkpoint": "artifacts/runs/convnext_tiny_cbam-20260419-080253/best.ckpt",
+  "best_epoch": 7,
+  "metrics_csv": "artifacts/runs/convnext_tiny_cbam-20260419-080253/metrics.csv",
+  "history_json": "artifacts/runs/convnext_tiny_cbam-20260419-080253/history.json",
+  "history_plot": "artifacts/runs/convnext_tiny_cbam-20260419-080253/history_train_metrics.png",
+  "model_name": "convnext_tiny_cbam",
+  "fusion_enabled": true,
+  "num_tasks": 1,
+  "predictions_csv": "artifacts/runs/convnext_tiny_cbam-20260419-080253/predictions.csv"
+}

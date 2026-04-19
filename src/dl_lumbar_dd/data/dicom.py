@@ -18,48 +18,161 @@ def build_three_view_tensor(
     series_table: pd.DataFrame,
     image_size: int = 224,
     num_slices: int = 1,
+    coord_lookup: dict[int, list[tuple[int, int, float, float]]] | None = None,
+    roi_crop: bool = False,
+    roi_padding: float = 0.3,
+    context_slices: int = 0,
 ) -> np.ndarray:
     """Create a tensor from representative slices of each series type.
 
-    When num_slices=1: returns (3, H, W) — one grayscale slice per view.
-    When num_slices>1: returns (3, num_slices, H, W) — multiple slices per view,
-    suitable for feeding directly as multi-channel input to pretrained backbones.
+    When coord_lookup is provided, uses annotated instance_number and (x,y)
+    instead of the blind middle slice. Supports ROI cropping and context slices.
+
+    coord_lookup maps series_id -> [(instance_number, condition_idx, x, y), ...]
     """
     root = Path(dataset_root)
     study_series = series_table[series_table["study_id"] == study_id]
-    views = [
-        _load_view_slices(root, study_id, study_series, st, image_size, num_slices)
-        for st in SERIES_TYPES
-    ]
+
+    views = []
+    for series_type in SERIES_TYPES:
+        series_id = _select_series_id(study_series, series_type)
+        coord_entries = coord_lookup.get(series_id, []) if coord_lookup and series_id else []
+
+        view = _load_targeted_view(
+            dataset_root=root,
+            study_id=study_id,
+            series_id=series_id,
+            image_size=image_size,
+            num_slices=num_slices,
+            coord_entries=coord_entries,
+            roi_crop=roi_crop,
+            roi_padding=roi_padding,
+            context_slices=context_slices,
+        )
+        views.append(view)
+
     return np.stack(views, axis=0).astype(np.float32)
 
 
-def _load_view_slices(
+def _load_targeted_view(
     dataset_root: Path,
     study_id: int,
-    study_series: pd.DataFrame,
-    series_type: str,
+    series_id: int | None,
     image_size: int,
     num_slices: int,
+    coord_entries: list[tuple[int, int, float, float]],
+    roi_crop: bool,
+    roi_padding: float,
+    context_slices: int,
 ) -> np.ndarray:
-    series_id = _select_series_id(study_series, series_type)
+    out_channels = max(num_slices, 1 + 2 * context_slices) if context_slices > 0 else num_slices
+    empty_single = np.zeros((image_size, image_size), dtype=np.float32)
+    empty_multi = np.zeros((out_channels, image_size, image_size), dtype=np.float32)
+
     if series_id is None:
-        if num_slices == 1:
-            return np.zeros((image_size, image_size), dtype=np.float32)
-        return np.zeros((num_slices, image_size, image_size), dtype=np.float32)
+        return empty_single if out_channels == 1 else empty_multi
 
-    dicom_files = _list_dicom_files(dataset_root / "train_images" / str(study_id) / str(series_id))
+    series_dir = dataset_root / "train_images" / str(study_id) / str(series_id)
+    dicom_files = _list_dicom_files(series_dir)
     if not dicom_files:
-        if num_slices == 1:
-            return np.zeros((image_size, image_size), dtype=np.float32)
-        return np.zeros((num_slices, image_size, image_size), dtype=np.float32)
+        return empty_single if out_channels == 1 else empty_multi
 
-    indices = _select_slice_indices(len(dicom_files), num_slices)
-    slices = [_read_and_resize(dicom_files[i], image_size) for i in indices]
+    # Level 1: Targeted slice selection
+    target_idx, crop_xy = _resolve_target_slice(dicom_files, coord_entries)
 
+    # Level 3: Context slices (target ± N adjacent)
+    if context_slices > 0:
+        total = len(dicom_files)
+        indices = []
+        for offset in range(-context_slices, context_slices + 1):
+            idx = max(0, min(total - 1, target_idx + offset))
+            indices.append(idx)
+        slices = [
+            _read_normalize_crop_resize(dicom_files[i], image_size, crop_xy if roi_crop else None, roi_padding)
+            for i in indices
+        ]
+        return np.stack(slices, axis=0)
+
+    # Level 1+2: Single targeted slice with optional ROI crop
     if num_slices == 1:
-        return slices[0]
+        return _read_normalize_crop_resize(
+            dicom_files[target_idx], image_size,
+            crop_xy if roi_crop else None, roi_padding,
+        )
+
+    # Multi-slice mode (evenly spaced, fallback)
+    indices = _select_slice_indices(len(dicom_files), num_slices)
+    slices = [
+        _read_normalize_crop_resize(dicom_files[i], image_size, crop_xy if roi_crop else None, roi_padding)
+        for i in indices
+    ]
     return np.stack(slices, axis=0)
+
+
+def _resolve_target_slice(
+    dicom_files: list[Path],
+    coord_entries: list[tuple[int, int, float, float]],
+) -> tuple[int, tuple[float, float] | None]:
+    """Find the best slice index and optional (x, y) crop center."""
+    if not coord_entries:
+        return len(dicom_files) // 2, None
+
+    # coord_entries: [(instance_number, condition_idx, x, y), ...]
+    # Use the first entry (typically the target condition)
+    instance_num, _, cx, cy = coord_entries[0]
+
+    # Map instance_number to file index
+    file_stems = {int(f.stem) if f.stem.isdigit() else -1: i for i, f in enumerate(dicom_files)}
+    if instance_num in file_stems:
+        return file_stems[instance_num], (cx, cy)
+
+    # Fallback: find closest instance number
+    closest_instance = min(file_stems.keys(), key=lambda k: abs(k - instance_num) if k >= 0 else 10**9)
+    if closest_instance >= 0:
+        return file_stems[closest_instance], (cx, cy)
+
+    return len(dicom_files) // 2, None
+
+
+def _read_normalize_crop_resize(
+    path: Path,
+    image_size: int,
+    crop_center: tuple[float, float] | None,
+    roi_padding: float,
+) -> np.ndarray:
+    """Read DICOM, normalize, optionally ROI-crop, then resize."""
+    pixels = _read_dicom_pixels(path)
+    normalized = _normalize_pixels(pixels)
+
+    if crop_center is not None:
+        normalized = _roi_crop(normalized, crop_center, roi_padding)
+
+    return cv2.resize(normalized, (image_size, image_size), interpolation=cv2.INTER_AREA)
+
+
+def _roi_crop(
+    image: np.ndarray,
+    center: tuple[float, float],
+    padding: float,
+) -> np.ndarray:
+    """Crop a square region around (cx, cy) with padding relative to crop size."""
+    h, w = image.shape[:2]
+    cx, cy = center
+
+    # Crop size: use the smaller dimension as base, with padding
+    base_size = min(h, w) * 0.5
+    half = int(base_size * (1.0 + padding) / 2)
+
+    cx_int, cy_int = int(round(cx)), int(round(cy))
+    x1 = max(0, cx_int - half)
+    y1 = max(0, cy_int - half)
+    x2 = min(w, cx_int + half)
+    y2 = min(h, cy_int + half)
+
+    if x2 <= x1 or y2 <= y1:
+        return image
+
+    return image[y1:y2, x1:x2]
 
 
 def _select_slice_indices(total: int, num_slices: int) -> list[int]:

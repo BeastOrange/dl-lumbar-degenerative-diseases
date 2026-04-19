@@ -46,6 +46,10 @@ def run_training(config_path: str | Path) -> dict[str, Any]:
         train_augment_mode=training_config.train_augment_mode,
         target_columns=target_columns_cfg,
         num_slices=int(raw_config.get("num_slices", 1)),
+        use_label_coordinates=bool(raw_config.get("use_label_coordinates", False)),
+        roi_crop=bool(raw_config.get("roi_crop", False)),
+        roi_padding=float(raw_config.get("roi_padding", 0.3)),
+        context_slices=int(raw_config.get("context_slices", 0)),
     )
     model = create_model(
         model_name=training_config.model_name,
@@ -115,6 +119,10 @@ def run_cv_training(config_path: str | Path) -> dict[str, Any]:
             train_augment_mode=training_config.train_augment_mode,
             target_columns=target_columns_cfg,
             num_slices=num_slices,
+            use_label_coordinates=bool(raw_config.get("use_label_coordinates", False)),
+            roi_crop=bool(raw_config.get("roi_crop", False)),
+            roi_padding=float(raw_config.get("roi_padding", 0.3)),
+            context_slices=int(raw_config.get("context_slices", 0)),
         )
 
         model = create_model(

@@ -35,17 +35,32 @@ class LumbarStudyDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         target_columns: list[str] | None = None,
         target_column: str | None = None,
         num_slices: int = 1,
+        use_label_coordinates: bool = False,
+        target_condition: str = "Spinal Canal Stenosis",
+        target_level: str = "L4/L5",
+        roi_crop: bool = False,
+        roi_padding: float = 0.3,
+        context_slices: int = 0,
     ) -> None:
         self.dataset_root = bundle.dataset_root
         self.series_table = bundle.series
         self.image_size = image_size
         self.num_slices = num_slices
+        self.roi_crop = roi_crop
+        self.roi_padding = roi_padding
+        self.context_slices = context_slices
         self.augment_mode = _normalize_augment_mode(augment_mode)
         records = manifest.sort_values("study_id").reset_index(drop=True)
         if max_samples is not None:
             records = records.head(max_samples)
         self.study_ids = records["study_id"].astype(int).tolist()
-        # Resolve: explicit list wins; single-column string promoted to list
+
+        self.coord_by_study: dict[int, dict[int, list[tuple[int, int, float, float]]]] = {}
+        if use_label_coordinates and bundle.coordinates is not None:
+            self.coord_by_study = _build_coord_lookup(
+                bundle.coordinates, target_condition, target_level,
+            )
+
         if target_columns is not None:
             self.target_columns = target_columns
         elif target_column is not None:
@@ -87,18 +102,25 @@ class LumbarStudyDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
 
     def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor]:
         study_id = self.study_ids[index]
+        coord_lookup = self.coord_by_study.get(study_id)
         image = build_three_view_tensor(
             dataset_root=self.dataset_root,
             study_id=study_id,
             series_table=self.series_table,
             image_size=self.image_size,
             num_slices=self.num_slices,
+            coord_lookup=coord_lookup,
+            roi_crop=self.roi_crop,
+            roi_padding=self.roi_padding,
+            context_slices=self.context_slices,
         )
         label = self.label_indices[index]
         tensor = torch.from_numpy(image).to(dtype=torch.float32)
-        if self.num_slices == 1:
+        if tensor.ndim == 2:
+            tensor = tensor.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+        elif tensor.ndim == 3:
             tensor = tensor.unsqueeze(1)  # (views, 1, H, W)
-        # else: tensor is already (views, num_slices, H, W)
+        # ndim == 4: already (views, channels, H, W) from multi-slice or context
         tensor = self._apply_augmentation(tensor)
         return tensor, torch.tensor(label, dtype=torch.long)
 
@@ -224,6 +246,10 @@ def build_dataloaders(
     train_augment_mode: str | None = None,
     target_columns: list[str] | None = None,
     num_slices: int = 1,
+    use_label_coordinates: bool = False,
+    roi_crop: bool = False,
+    roi_padding: float = 0.3,
+    context_slices: int = 0,
 ) -> tuple[DataLoader[tuple[torch.Tensor, torch.Tensor]], DataLoader[tuple[torch.Tensor, torch.Tensor]]]:
     """Build train/validation dataloaders with study-level manifests."""
     bundle, train_path, validation_path = prepare_bundle_and_manifests(
@@ -241,6 +267,12 @@ def build_dataloaders(
         shared_manifest = train_manifest.head(overfit_subset_size).copy()
         train_manifest = shared_manifest
         validation_manifest = shared_manifest.copy()
+    coord_kwargs = dict(
+        use_label_coordinates=use_label_coordinates,
+        roi_crop=roi_crop,
+        roi_padding=roi_padding,
+        context_slices=context_slices,
+    )
     train_dataset = LumbarStudyDataset(
         train_manifest,
         bundle=bundle,
@@ -250,6 +282,7 @@ def build_dataloaders(
         target_columns=target_columns,
         target_column=target_column,
         num_slices=num_slices,
+        **coord_kwargs,
     )
     validation_dataset = LumbarStudyDataset(
         validation_manifest,
@@ -260,6 +293,7 @@ def build_dataloaders(
         target_columns=target_columns,
         target_column=target_column,
         num_slices=num_slices,
+        **coord_kwargs,
     )
     common_loader_args: dict[str, object] = {
         "batch_size": batch_size,
@@ -329,6 +363,25 @@ def _load_manifest_cache_key(path: Path) -> dict[str, object] | None:
     return content if isinstance(content, dict) else None
 
 
+def _build_coord_lookup(
+    coordinates: pd.DataFrame,
+    target_condition: str,
+    target_level: str,
+) -> dict[int, dict[int, list[tuple[int, int, float, float]]]]:
+    """Build lookup: study_id -> {series_id -> [(instance_num, 0, x, y), ...]}."""
+    filtered = coordinates[
+        (coordinates["condition"] == target_condition)
+        & (coordinates["level"] == target_level)
+    ]
+    result: dict[int, dict[int, list[tuple[int, int, float, float]]]] = {}
+    for _, row in filtered.iterrows():
+        sid = int(row["study_id"])
+        ser = int(row["series_id"])
+        entry = (int(row["instance_number"]), 0, float(row["x"]), float(row["y"]))
+        result.setdefault(sid, {}).setdefault(ser, []).append(entry)
+    return result
+
+
 def build_fold_dataloaders(
     *,
     fold_idx: int,
@@ -346,6 +399,10 @@ def build_fold_dataloaders(
     train_augment_mode: str | None = None,
     target_columns: list[str] | None = None,
     num_slices: int = 1,
+    use_label_coordinates: bool = False,
+    roi_crop: bool = False,
+    roi_padding: float = 0.3,
+    context_slices: int = 0,
 ) -> tuple[DataLoader[tuple[torch.Tensor, torch.Tensor]], DataLoader[tuple[torch.Tensor, torch.Tensor]]]:
     """Build dataloaders for a specific cross-validation fold."""
     root = Path(processed_root)
@@ -358,17 +415,23 @@ def build_fold_dataloaders(
     train_manifest = pd.read_csv(fold_train)
     val_manifest = pd.read_csv(fold_val)
 
+    coord_kwargs = dict(
+        use_label_coordinates=use_label_coordinates,
+        roi_crop=roi_crop,
+        roi_padding=roi_padding,
+        context_slices=context_slices,
+    )
     train_dataset = LumbarStudyDataset(
         train_manifest, bundle=bundle, image_size=image_size,
         max_samples=max_train_samples, augment_mode=train_augment_mode,
         target_columns=target_columns, target_column=target_column,
-        num_slices=num_slices,
+        num_slices=num_slices, **coord_kwargs,
     )
     val_dataset = LumbarStudyDataset(
         val_manifest, bundle=bundle, image_size=image_size,
         max_samples=max_val_samples, augment_mode=None,
         target_columns=target_columns, target_column=target_column,
-        num_slices=num_slices,
+        num_slices=num_slices, **coord_kwargs,
     )
 
     common_loader_args: dict[str, object] = {
