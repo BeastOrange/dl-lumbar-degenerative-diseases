@@ -327,3 +327,60 @@ def _load_manifest_cache_key(path: Path) -> dict[str, object] | None:
     except (FileNotFoundError, json.JSONDecodeError):
         return None
     return content if isinstance(content, dict) else None
+
+
+def build_fold_dataloaders(
+    *,
+    fold_idx: int,
+    dataset_root: str | Path,
+    processed_root: str | Path,
+    target_column: str,
+    image_size: int,
+    batch_size: int,
+    num_workers: int,
+    seed: int,
+    max_studies: int | None = None,
+    max_train_samples: int | None = None,
+    max_val_samples: int | None = None,
+    sampler_mode: str | None = None,
+    train_augment_mode: str | None = None,
+    target_columns: list[str] | None = None,
+    num_slices: int = 1,
+) -> tuple[DataLoader[tuple[torch.Tensor, torch.Tensor]], DataLoader[tuple[torch.Tensor, torch.Tensor]]]:
+    """Build dataloaders for a specific cross-validation fold."""
+    root = Path(processed_root)
+    fold_train = root / f"fold_{fold_idx}_train.csv"
+    fold_val = root / f"fold_{fold_idx}_validation.csv"
+    if not fold_train.exists() or not fold_val.exists():
+        raise FileNotFoundError(f"Fold {fold_idx} manifests not found in {root}")
+
+    bundle = load_rsna_tables(dataset_root, max_studies=max_studies)
+    train_manifest = pd.read_csv(fold_train)
+    val_manifest = pd.read_csv(fold_val)
+
+    train_dataset = LumbarStudyDataset(
+        train_manifest, bundle=bundle, image_size=image_size,
+        max_samples=max_train_samples, augment_mode=train_augment_mode,
+        target_columns=target_columns, target_column=target_column,
+        num_slices=num_slices,
+    )
+    val_dataset = LumbarStudyDataset(
+        val_manifest, bundle=bundle, image_size=image_size,
+        max_samples=max_val_samples, augment_mode=None,
+        target_columns=target_columns, target_column=target_column,
+        num_slices=num_slices,
+    )
+
+    common_loader_args: dict[str, object] = {
+        "batch_size": batch_size,
+        "num_workers": num_workers,
+        "pin_memory": torch.cuda.is_available(),
+        "persistent_workers": num_workers > 0,
+    }
+    if num_workers > 0:
+        common_loader_args["prefetch_factor"] = 2
+
+    train_sampler = _build_train_sampler(train_dataset, sampler_mode=sampler_mode, seed=seed)
+    train_loader = DataLoader(train_dataset, shuffle=train_sampler is None, sampler=train_sampler, **common_loader_args)
+    val_loader = DataLoader(val_dataset, shuffle=False, **common_loader_args)
+    return train_loader, val_loader

@@ -1,0 +1,33 @@
+{
+  "mode": "cv_ensemble",
+  "num_folds": 3,
+  "ensemble_val_macro_f1": 0.5530839753328834,
+  "ensemble_val_accuracy": 0.7380952380952381,
+  "ensemble_metrics": {
+    "macro_f1": 0.5530839753328834,
+    "accuracy": 0.7380952380952381,
+    "recall_class_0": 0.8178137651821862,
+    "pred_rate_0": 0.6691995947315096,
+    "recall_class_1": 0.2320675105485232,
+    "pred_rate_1": 0.11398176291793313,
+    "recall_class_2": 0.7450980392156863,
+    "pred_rate_2": 0.21681864235055726
+  },
+  "fold_summaries": [
+    {
+      "fold": 0,
+      "best_epoch": 8,
+      "run_dir": "artifacts/runs/convnext_tiny_cbam-20260419-071409"
+    },
+    {
+      "fold": 1,
+      "best_epoch": 5,
+      "run_dir": "artifacts/runs/convnext_tiny_cbam-20260419-071751"
+    },
+    {
+      "fold": 2,
+      "best_epoch": 13,
+      "run_dir": "artifacts/runs/convnext_tiny_cbam-20260419-072057"
+    }
+  ]
+}

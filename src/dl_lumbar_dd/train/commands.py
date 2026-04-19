@@ -12,7 +12,7 @@ from dl_lumbar_dd.config import load_yaml
 from dl_lumbar_dd.constants import TARGET_COLUMNS
 from dl_lumbar_dd.models import create_model
 from dl_lumbar_dd.train.config import TrainingConfig
-from dl_lumbar_dd.train.data import build_dataloaders
+from dl_lumbar_dd.train.data import build_dataloaders, build_fold_dataloaders
 from dl_lumbar_dd.train.trainer import Trainer, set_global_seed
 from dl_lumbar_dd.utils.io import write_json
 from dl_lumbar_dd.visualization import save_training_history
@@ -75,6 +75,101 @@ def run_training(config_path: str | Path) -> dict[str, Any]:
     if result.predictions_csv is not None:
         summary["predictions_csv"] = str(result.predictions_csv)
     write_json(summary, result.run_dir / "run_summary.json")
+    return summary
+
+
+def run_cv_training(config_path: str | Path) -> dict[str, Any]:
+    """Run cross-validation training: one model per fold, ensemble predictions."""
+    import csv as csv_mod
+
+    import numpy as np
+
+    raw_config = load_yaml(config_path)
+    training_config = _build_training_config(raw_config)
+    stratify_col = _get_stratify_column(raw_config)
+    target_columns_cfg = _get_target_columns(raw_config)
+    num_tasks = len(target_columns_cfg) if target_columns_cfg else 1
+    num_folds = int(raw_config.get("folds", 3))
+    num_slices = int(raw_config.get("num_slices", 1))
+
+    all_targets: list[int] = []
+    all_scores: list[list[float]] = []
+    fold_summaries: list[dict[str, Any]] = []
+
+    for fold_idx in range(num_folds):
+        set_global_seed(training_config.seed + fold_idx)
+
+        train_loader, val_loader = build_fold_dataloaders(
+            fold_idx=fold_idx,
+            dataset_root=str(raw_config["dataset_root"]),
+            processed_root=str(raw_config["processed_root"]),
+            target_column=stratify_col,
+            image_size=training_config.image_size,
+            batch_size=training_config.batch_size,
+            num_workers=training_config.num_workers,
+            seed=training_config.seed + fold_idx,
+            max_studies=_as_optional_int(raw_config.get("max_studies")),
+            max_train_samples=_as_optional_int(raw_config.get("max_train_samples")),
+            max_val_samples=_as_optional_int(raw_config.get("max_val_samples")),
+            sampler_mode=training_config.sampler_mode,
+            train_augment_mode=training_config.train_augment_mode,
+            target_columns=target_columns_cfg,
+            num_slices=num_slices,
+        )
+
+        model = create_model(
+            model_name=training_config.model_name,
+            num_classes=int(raw_config.get("num_classes", 3)),
+            fusion_enabled=training_config.fusion_enabled,
+            pretrained=bool(raw_config.get("pretrained", False)),
+            in_channels=int(raw_config.get("in_channels", 1)),
+            dropout=float(raw_config.get("dropout", 0.2)),
+            image_size=training_config.image_size,
+            num_tasks=num_tasks,
+        )
+
+        trainer = Trainer(model=model, config=training_config)
+        result = trainer.fit(train_loader=train_loader, val_loader=val_loader)
+
+        if result.predictions_csv is not None:
+            with open(result.predictions_csv) as f:
+                rows = list(csv_mod.DictReader(f))
+            for row in rows:
+                all_targets.append(int(row["y_true"]))
+                score_cols = sorted(k for k in row if k.startswith("score_"))
+                all_scores.append([float(row[c]) for c in score_cols])
+
+        fold_summary = {
+            "fold": fold_idx,
+            "best_epoch": result.best_epoch,
+            "run_dir": str(result.run_dir),
+        }
+        fold_summaries.append(fold_summary)
+
+        # Delete checkpoint to save disk — keep only metrics/predictions
+        ckpt = result.best_checkpoint
+        if ckpt.exists():
+            ckpt.unlink()
+
+    # Compute ensemble metrics
+    ensemble_preds = [int(np.argmax(s)) for s in all_scores]
+    from dl_lumbar_dd.train.metrics import classification_metrics
+    num_classes = int(raw_config.get("num_classes", 3))
+    ensemble_metrics = classification_metrics(all_targets, ensemble_preds, num_classes)
+
+    # Persist ensemble summary
+    ensemble_dir = Path(training_config.runs_root) / f"cv_ensemble_{num_folds}fold"
+    ensemble_dir.mkdir(parents=True, exist_ok=True)
+    summary = {
+        "mode": "cv_ensemble",
+        "num_folds": num_folds,
+        "ensemble_val_macro_f1": ensemble_metrics["macro_f1"],
+        "ensemble_val_accuracy": ensemble_metrics["accuracy"],
+        "ensemble_metrics": ensemble_metrics,
+        "fold_summaries": fold_summaries,
+    }
+    write_json(summary, ensemble_dir / "cv_summary.json")
+    _persist_run_config(raw_config, ensemble_dir)
     return summary
 
 

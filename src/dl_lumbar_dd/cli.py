@@ -12,7 +12,7 @@ from dl_lumbar_dd.constants import ARTIFACTS_DIR, DEFAULT_DATASET_ROOT, REPORTS_
 from dl_lumbar_dd.data.commands import run_eda, run_preprocess
 from dl_lumbar_dd.eval.commands import run_comparison, run_evaluation
 from dl_lumbar_dd.healthcheck import run_healthcheck
-from dl_lumbar_dd.train.commands import run_training
+from dl_lumbar_dd.train.commands import run_cv_training, run_training
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -58,6 +58,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     train_parser = subparsers.add_parser("train", help="Train one model configuration")
     train_parser.add_argument("--config", default="configs/train/default.yaml")
+    train_parser.add_argument("--cv", action="store_true", help="Run cross-validation ensemble")
     train_parser.set_defaults(handler=_handle_train)
 
     evaluate_parser = subparsers.add_parser("evaluate", help="Evaluate one run and generate figures")
@@ -107,6 +108,8 @@ def _handle_preprocess(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _handle_train(args: argparse.Namespace) -> dict[str, Any]:
+    if getattr(args, "cv", False):
+        return run_cv_training(args.config)
     return run_training(args.config)
 
 
