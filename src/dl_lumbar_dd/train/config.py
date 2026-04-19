@@ -30,10 +30,12 @@ class TrainingConfig:
     early_stopping_patience: int | None = None
     train_augment_mode: str | None = None
     label_smoothing: float = 0.0
-    # Multi-task: list of target column names (None = single-task mode)
     target_columns: list[str] | None = None
-    # TTA: number of augmented views to average at inference time
     tta_count: int = 1
+    warmup_epochs: int = 0
+    grad_clip_max_norm: float | None = None
+    grad_accumulation_steps: int = 1
+    mixup_alpha: float = 0.0
 
 
 @dataclass(slots=True)

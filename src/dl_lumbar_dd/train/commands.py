@@ -130,6 +130,10 @@ def _build_training_config(config: dict[str, Any]) -> TrainingConfig:
         train_augment_mode=_as_optional_str(config.get("train_augment_mode")),
         label_smoothing=float(config.get("label_smoothing", 0.0)),
         tta_count=int(config.get("tta_count", 1)),
+        warmup_epochs=int(config.get("warmup_epochs", 0)),
+        grad_clip_max_norm=_as_optional_float(config.get("grad_clip_max_norm")),
+        grad_accumulation_steps=int(config.get("grad_accumulation_steps", 1)),
+        mixup_alpha=float(config.get("mixup_alpha", 0.0)),
     )
 
 
@@ -160,6 +164,12 @@ def _as_optional_int(value: Any) -> int | None:
     if value in (None, "", "null"):
         return None
     return int(value)
+
+
+def _as_optional_float(value: Any) -> float | None:
+    if value in (None, "", "null"):
+        return None
+    return float(value)
 
 
 def _as_optional_str(value: Any) -> str | None:

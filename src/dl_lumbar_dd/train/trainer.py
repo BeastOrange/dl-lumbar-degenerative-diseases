@@ -121,36 +121,48 @@ class Trainer:
         )
         from dl_lumbar_dd.train.data import apply_tta_augmentation
 
-        for batch in progress:
+        accum_steps = max(getattr(self.config, "grad_accumulation_steps", 1), 1)
+        mixup_alpha = getattr(self.config, "mixup_alpha", 0.0)
+
+        if training:
+            self.optimizer.zero_grad(set_to_none=True)
+
+        for batch_idx, batch in enumerate(progress):
             inputs, labels = self._move_batch(batch)
             autocast_context = self._autocast_context()
             with grad_context, autocast_context:
-                if training or tta_count <= 1:
+                if training and mixup_alpha > 0.0:
+                    inputs, labels_a, labels_b, lam = self._apply_mixup(inputs, labels, mixup_alpha)
+                    logits = self.model(inputs)
+                    loss = lam * self._compute_loss(logits, labels_a) + (1 - lam) * self._compute_loss(logits, labels_b)
+                    metric_labels = labels_a
+                elif training or tta_count <= 1:
                     logits = self.model(inputs)
                     loss = self._compute_loss(logits, labels)
+                    metric_labels = labels
                 else:
-                    # TTA: average logits over multiple augmented views
                     logits_list: list[torch.Tensor] = []
                     for t in range(tta_count):
-                        if t == 0:
-                            aug_inputs = inputs
-                        else:
-                            aug_inputs = apply_tta_augmentation(inputs)
+                        aug_inputs = inputs if t == 0 else apply_tta_augmentation(inputs)
                         logits_list.append(self.model(aug_inputs))
                     logits = torch.stack(logits_list, dim=0).mean(dim=0)
                     loss = self._compute_loss(logits, labels)
+                    metric_labels = labels
 
             if training:
-                self.optimizer.zero_grad(set_to_none=True)
-                self._backward_step(loss)
+                scaled_loss = loss / accum_steps if accum_steps > 1 else loss
+                self._backward_only(scaled_loss)
+                if (batch_idx + 1) % accum_steps == 0 or (batch_idx + 1) == len(loader):
+                    self._optimizer_step()
+                    self.optimizer.zero_grad(set_to_none=True)
+
             losses.append(float(loss.detach().cpu()))
-            # Flatten for single-task metrics; multi-task uses task-0 for quick monitoring
             if logits.ndim == 3:
                 task0_logits = logits[:, 0, :]
-                task0_labels = labels[:, 0]
+                task0_labels = metric_labels[:, 0]
             else:
                 task0_logits = logits
-                task0_labels = labels
+                task0_labels = metric_labels
             probabilities = torch.softmax(task0_logits.detach(), dim=1)
             predictions.extend(probabilities.argmax(dim=1).cpu().tolist())
             targets.extend(task0_labels.detach().cpu().tolist())
@@ -193,18 +205,41 @@ class Trainer:
         return total_loss
 
     def _backward_step(self, loss: torch.Tensor) -> None:
+        self._backward_only(loss)
+        self._optimizer_step()
+
+    def _backward_only(self, loss: torch.Tensor) -> None:
         if self.scaler.is_enabled():
             self.scaler.scale(loss).backward()
+        else:
+            loss.backward()
+
+    def _optimizer_step(self) -> None:
+        max_norm = getattr(self.config, "grad_clip_max_norm", None)
+        if self.scaler.is_enabled():
+            if max_norm is not None:
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm)
             self.scaler.step(self.optimizer)
             self.scaler.update()
-            return
-        loss.backward()
-        self.optimizer.step()
+        else:
+            if max_norm is not None:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm)
+            self.optimizer.step()
 
     def _autocast_context(self) -> Any:
         if not self.config.amp or self.device.type != "cuda":
             return nullcontext()
         return torch.autocast(device_type="cuda", dtype=torch.float16)
+
+    @staticmethod
+    def _apply_mixup(
+        inputs: torch.Tensor, labels: torch.Tensor, alpha: float,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, float]:
+        lam = float(np.random.beta(alpha, alpha))
+        index = torch.randperm(inputs.size(0), device=inputs.device)
+        mixed = lam * inputs + (1 - lam) * inputs[index]
+        return mixed, labels, labels[index], lam
 
     def _build_criterion(self, train_loader: DataLoader[Any]) -> nn.Module | list[nn.Module]:
         """Build loss function(s). Returns a single Module for single-task, list for multi-task."""
@@ -271,10 +306,27 @@ class Trainer:
 
     def _build_scheduler(self) -> torch.optim.lr_scheduler.LRScheduler | None:
         name = self.config.scheduler_name.lower()
+        warmup = getattr(self.config, "warmup_epochs", 0)
+        main_sched = self._build_main_scheduler(name, warmup)
+        if warmup <= 0:
+            return main_sched
+        warmup_sched = torch.optim.lr_scheduler.LinearLR(
+            self.optimizer, start_factor=0.01, total_iters=warmup,
+        )
+        if main_sched is None:
+            return warmup_sched
+        return torch.optim.lr_scheduler.SequentialLR(
+            self.optimizer,
+            schedulers=[warmup_sched, main_sched],
+            milestones=[warmup],
+        )
+
+    def _build_main_scheduler(self, name: str, warmup: int) -> torch.optim.lr_scheduler.LRScheduler | None:
+        remaining = max(self.config.epochs - warmup, 1)
         if name == "cosine":
-            return torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=max(self.config.epochs, 1))
+            return torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=remaining)
         if name == "step":
-            return torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=max(self.config.epochs // 2, 1), gamma=0.1)
+            return torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=max(remaining // 2, 1), gamma=0.1)
         return None
 
     def _create_run_dir(self) -> Path:
