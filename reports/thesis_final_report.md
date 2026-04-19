@@ -48,7 +48,7 @@
 
 数据集标注覆盖 5 个椎间盘水平（L1/L2 至 L5/S1）的 25 种病变条件，分为三个严重程度等级：Normal/Mild、Moderate、Severe。
 
-![类别分布](reports/figures/eda_smoke/class_distribution.png)
+![类别分布](figures/eda_smoke/class_distribution.png)
 
 本研究聚焦于 L4/L5 水平的脊柱椎管狭窄（spinal_canal_stenosis_l4_l5）三分类任务，其类别分布如下：
 
@@ -62,11 +62,11 @@
 
 #### 2.2.2 序列分布
 
-![序列分布](reports/figures/eda_smoke/series_distribution.png)
+![序列分布](figures/eda_smoke/series_distribution.png)
 
 #### 2.2.3 缺失值分析
 
-![缺失值分析](reports/figures/eda_smoke/missing_values.png)
+![缺失值分析](figures/eda_smoke/missing_values.png)
 
 ### 2.3 数据预处理
 
@@ -76,7 +76,7 @@
 - 训练集/验证集 = 80/20（1,580 / 395 个 study）
 - 分层键（stratify_key）= 严重程度等级 + 病变负担桶
 
-![数据划分分布](reports/figures/preprocess_smoke/split_distribution.png)
+![数据划分分布](figures/preprocess_smoke/split_distribution.png)
 
 #### 2.3.2 DICOM 影像处理流程
 
@@ -85,7 +85,7 @@ DICOM 文件 → pydicom 读取 → MONOCHROME1 反转 → Min-Max 归一化 [0,
 → 精准切片选择（基于标注坐标）→ ROI 裁剪 → cv2.resize(224×224)
 ```
 
-![预处理预览](reports/figures/preprocess_smoke/preprocessing_preview.png)
+![预处理预览](figures/preprocess_smoke/preprocessing_preview.png)
 
 #### 2.3.3 精准切片选择（创新点）
 
@@ -199,7 +199,7 @@ score(feature) → softmax → 加权求和 + 残差精炼
 
 使用统一配置（bs=32, lr=3e-4, light aug, balanced sampler, seed=42, 224px）对五种模型进行公平对比。
 
-![五模型对比](reports/figures/best_model/model_comparison.png)
+![五模型对比](figures/best_model/model_comparison.png)
 
 | 排名 | 模型 | val_macro_F1 | val_accuracy | Recall_0 | Recall_1 | Recall_2 |
 |:---:|------|:---:|:---:|:---:|:---:|:---:|
@@ -215,7 +215,7 @@ score(feature) → softmax → 加权求和 + 残差精炼
 
 以 ConvNeXt+CBAM（F1=0.654）为基准，逐一消融关键组件。
 
-![消融实验](reports/figures/best_model/ablation_study.png)
+![消融实验](figures/best_model/ablation_study.png)
 
 | 消融变量 | val_macro_F1 | 变化量 | 结论 |
 |---------|:---:|:---:|------|
@@ -232,7 +232,7 @@ score(feature) → softmax → 加权求和 + 残差精炼
 
 这是本研究的核心创新实验。通过逐级引入标注坐标信息，系统性提升模型性能。
 
-![精准优化进程](reports/figures/best_model/targeted_progression.png)
+![精准优化进程](figures/best_model/targeted_progression.png)
 
 | 方法 | val_macro_F1 | val_accuracy | Severe 召回率 | 提升 |
 |------|:---:|:---:|:---:|:---:|
@@ -251,17 +251,17 @@ score(feature) → softmax → 加权求和 + 残差精炼
 
 #### 5.4.1 混淆矩阵
 
-![混淆矩阵](reports/figures/best_model/confusion_matrix.png)
+![混淆矩阵](figures/best_model/confusion_matrix.png)
 
 #### 5.4.2 ROC 曲线
 
-![ROC 曲线](reports/figures/best_model/roc_curves.png)
+![ROC 曲线](figures/best_model/roc_curves.png)
 
 #### 5.4.3 训练历史
 
 最佳模型（ConvNeXt+CBAM, Targeted ROI+Mixup）的训练历史：
 
-![训练历史](artifacts/runs/convnext_tiny_cbam-20260419-090606/history_train_metrics.png)
+![训练历史](figures/best_model/training_history.png)
 
 ### 5.5 交叉验证集成
 
