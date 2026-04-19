@@ -17,6 +17,7 @@ class ModelSpec:
     num_classes: int
     fusion_enabled: bool = True
     pretrained: bool = True
+    load_backbone_weights: bool = True
     in_channels: int = 3
     dropout: float = 0.2
     image_size: int | None = 64
@@ -44,7 +45,7 @@ class LumbarModel(nn.Module):
     def __init__(self, spec: ModelSpec) -> None:
         super().__init__()
         encoder_factory = BACKBONE_FACTORIES[spec.model_name]
-        self.encoder = encoder_factory(spec.pretrained, spec.image_size)
+        self.encoder = encoder_factory(spec.pretrained and spec.load_backbone_weights, spec.image_size)
         self.input_adapter = nn.Identity()
         if spec.pretrained and spec.in_channels == 1:
             self.input_adapter = _RepeatGrayscaleToRgb()
@@ -89,6 +90,7 @@ def create_model(
     num_classes: int,
     fusion_enabled: bool = True,
     pretrained: bool = True,
+    load_backbone_weights: bool = True,
     in_channels: int = 3,
     dropout: float = 0.2,
     image_size: int | None = 64,
@@ -101,6 +103,7 @@ def create_model(
         num_classes=num_classes,
         fusion_enabled=fusion_enabled,
         pretrained=pretrained,
+        load_backbone_weights=load_backbone_weights,
         in_channels=in_channels,
         dropout=dropout,
         image_size=image_size,

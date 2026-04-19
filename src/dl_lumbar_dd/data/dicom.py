@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 
 import cv2
@@ -10,6 +12,12 @@ import pandas as pd
 import pydicom
 
 from dl_lumbar_dd.constants import SERIES_TYPES
+
+
+@dataclass(frozen=True, slots=True)
+class DicomUpload:
+    name: str
+    content: bytes
 
 
 def build_three_view_tensor(
@@ -51,6 +59,35 @@ def build_three_view_tensor(
         )
         views.append(view)
 
+    return np.stack(views, axis=0).astype(np.float32)
+
+
+def build_three_view_tensor_from_uploads(
+    uploads: list[DicomUpload],
+    image_size: int = 224,
+) -> np.ndarray:
+    grouped: dict[str, list[tuple[int, np.ndarray]]] = {series_type: [] for series_type in SERIES_TYPES}
+    for upload in uploads:
+        dataset = pydicom.dcmread(BytesIO(upload.content), force=True)
+        series_type = _resolve_uploaded_series_type(dataset, upload.name)
+        if series_type is None:
+            continue
+        pixels = _pixels_from_dataset(dataset)
+        grouped[series_type].append((_instance_number(dataset), pixels))
+
+    missing = [series_type for series_type, slices in grouped.items() if not slices]
+    if missing:
+        raise ValueError(
+            "上传的文件不完整。请直接选择同一个病例文件夹中的全部 DCM 文件一起上传，不要手动只挑几张。"
+        )
+
+    views = []
+    for series_type in SERIES_TYPES:
+        slices = sorted(grouped[series_type], key=lambda item: item[0])
+        middle_pixels = slices[len(slices) // 2][1]
+        normalized = _normalize_pixels(middle_pixels)
+        resized = cv2.resize(normalized, (image_size, image_size), interpolation=cv2.INTER_AREA)
+        views.append(resized)
     return np.stack(views, axis=0).astype(np.float32)
 
 
@@ -212,10 +249,44 @@ def _dicom_sort_key(path: Path) -> tuple[int, str]:
 
 def _read_dicom_pixels(path: Path) -> np.ndarray:
     dataset = pydicom.dcmread(str(path), force=True)
+    return _pixels_from_dataset(dataset)
+
+
+def _pixels_from_dataset(dataset: pydicom.Dataset) -> np.ndarray:
     pixels = dataset.pixel_array.astype(np.float32)
     if getattr(dataset, "PhotometricInterpretation", "MONOCHROME2") == "MONOCHROME1":
         pixels = pixels.max() - pixels
     return pixels
+
+
+def _instance_number(dataset: pydicom.Dataset) -> int:
+    raw_value = getattr(dataset, "InstanceNumber", 0)
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _resolve_uploaded_series_type(dataset: pydicom.Dataset, filename: str) -> str | None:
+    description = str(getattr(dataset, "SeriesDescription", "")).strip()
+    normalized = description.lower()
+    if description in SERIES_TYPES:
+        return description
+    if "sag" in normalized and "t1" in normalized:
+        return "Sagittal T1"
+    if "sag" in normalized and ("t2" in normalized or "stir" in normalized):
+        return "Sagittal T2/STIR"
+    if ("axial" in normalized or normalized.startswith("ax") or " ax " in f" {normalized} ") and "t2" in normalized:
+        return "Axial T2"
+
+    fallback = filename.lower()
+    if "sag" in fallback and "t1" in fallback:
+        return "Sagittal T1"
+    if "sag" in fallback and ("t2" in fallback or "stir" in fallback):
+        return "Sagittal T2/STIR"
+    if ("axial" in fallback or fallback.startswith("ax") or "_ax_" in fallback or "-ax-" in fallback) and "t2" in fallback:
+        return "Axial T2"
+    return None
 
 
 def _normalize_pixels(pixels: np.ndarray) -> np.ndarray:

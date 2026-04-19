@@ -130,8 +130,10 @@ uv run lumbar-cli compare --runs-root .\artifacts\runs --primary-metric val_macr
 
 ```bash
 # 启动 Streamlit 平台（浏览器自动打开）
-uv run streamlit run apps/streamlit/Home.py
+uv run streamlit run apps/streamlit_app.py
 ```
+
+当前推荐入口为中文极简推理页，只保留“上传病例 DCM 文件 -> 输出模型推理结果”。使用时请直接选择同一个病例文件夹中的全部 `.dcm` 文件一起上传，不要混传不同病例，也不要手动随便挑几张。
 
 Windows PowerShell:
 

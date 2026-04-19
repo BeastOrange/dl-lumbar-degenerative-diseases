@@ -113,6 +113,30 @@ def test_prepare_views_grayscale_pretrained_applies_imagenet_normalization(
     ), "预训练输入应使用 ImageNet mean/std 进行标准化。"
 
 
+def test_prepare_views_can_keep_pretrained_pipeline_without_loading_backbone_weights(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_name = "dummy_pretrained_pipeline_no_weights"
+    monkeypatch.setitem(BACKBONE_FACTORIES, model_name, _DummyEncoder)
+    model = create_model(
+        model_name=model_name,
+        num_classes=3,
+        fusion_enabled=False,
+        pretrained=True,
+        load_backbone_weights=False,
+        in_channels=1,
+        dropout=0.1,
+    )
+    inputs = torch.full((1, 1, 8, 8), 0.5, dtype=torch.float32)
+
+    prepared = model._prepare_views(inputs)[0]
+    expected = model.input_normalizer(inputs.repeat(1, 3, 1, 1))
+
+    assert model.encoder.pretrained is False
+    assert prepared.shape == (1, 3, 8, 8)
+    assert torch.allclose(prepared, expected, atol=1e-6)
+
+
 def test_convnext_encoder_uses_torchvision_default_weights_when_no_local_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
