@@ -45,6 +45,7 @@ def run_training(config_path: str | Path) -> dict[str, Any]:
         overfit_subset_size=training_config.overfit_subset_size,
         train_augment_mode=training_config.train_augment_mode,
         target_columns=target_columns_cfg,
+        num_slices=int(raw_config.get("num_slices", 1)),
     )
     model = create_model(
         model_name=training_config.model_name,

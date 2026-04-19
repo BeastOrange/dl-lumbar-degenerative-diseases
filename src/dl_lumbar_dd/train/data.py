@@ -33,12 +33,13 @@ class LumbarStudyDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
         max_samples: int | None = None,
         augment_mode: str | None = None,
         target_columns: list[str] | None = None,
-        # Backward-compat: single target_column (str) is promoted to single-item list
         target_column: str | None = None,
+        num_slices: int = 1,
     ) -> None:
         self.dataset_root = bundle.dataset_root
         self.series_table = bundle.series
         self.image_size = image_size
+        self.num_slices = num_slices
         self.augment_mode = _normalize_augment_mode(augment_mode)
         records = manifest.sort_values("study_id").reset_index(drop=True)
         if max_samples is not None:
@@ -91,9 +92,13 @@ class LumbarStudyDataset(Dataset[tuple[torch.Tensor, torch.Tensor]]):
             study_id=study_id,
             series_table=self.series_table,
             image_size=self.image_size,
+            num_slices=self.num_slices,
         )
         label = self.label_indices[index]
-        tensor = torch.from_numpy(image).unsqueeze(1).to(dtype=torch.float32)
+        tensor = torch.from_numpy(image).to(dtype=torch.float32)
+        if self.num_slices == 1:
+            tensor = tensor.unsqueeze(1)  # (views, 1, H, W)
+        # else: tensor is already (views, num_slices, H, W)
         tensor = self._apply_augmentation(tensor)
         return tensor, torch.tensor(label, dtype=torch.long)
 
@@ -218,15 +223,9 @@ def build_dataloaders(
     overfit_subset_size: int | None = None,
     train_augment_mode: str | None = None,
     target_columns: list[str] | None = None,
+    num_slices: int = 1,
 ) -> tuple[DataLoader[tuple[torch.Tensor, torch.Tensor]], DataLoader[tuple[torch.Tensor, torch.Tensor]]]:
-    """Build train/validation dataloaders with study-level manifests.
-
-    Args:
-        target_column: Single column name used for stratified splitting.
-        target_columns: List of column names for multi-task learning.
-            When provided, the dataset returns labels of shape (num_tasks,).
-            When None, single-task mode is used (backward compatible).
-    """
+    """Build train/validation dataloaders with study-level manifests."""
     bundle, train_path, validation_path = prepare_bundle_and_manifests(
         dataset_root=dataset_root,
         processed_root=processed_root,
@@ -250,6 +249,7 @@ def build_dataloaders(
         augment_mode=train_augment_mode,
         target_columns=target_columns,
         target_column=target_column,
+        num_slices=num_slices,
     )
     validation_dataset = LumbarStudyDataset(
         validation_manifest,
@@ -259,6 +259,7 @@ def build_dataloaders(
         augment_mode=None,
         target_columns=target_columns,
         target_column=target_column,
+        num_slices=num_slices,
     )
     common_loader_args: dict[str, object] = {
         "batch_size": batch_size,

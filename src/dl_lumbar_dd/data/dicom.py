@@ -17,32 +17,65 @@ def build_three_view_tensor(
     study_id: int,
     series_table: pd.DataFrame,
     image_size: int = 224,
+    num_slices: int = 1,
 ) -> np.ndarray:
-    """Create a three-channel tensor from representative slices of each series type."""
+    """Create a tensor from representative slices of each series type.
+
+    When num_slices=1: returns (3, H, W) — one grayscale slice per view.
+    When num_slices>1: returns (3, num_slices, H, W) — multiple slices per view,
+    suitable for feeding directly as multi-channel input to pretrained backbones.
+    """
     root = Path(dataset_root)
     study_series = series_table[series_table["study_id"] == study_id]
     views = [
-        _load_view_image(root, study_id=study_id, study_series=study_series, series_type=series_type, image_size=image_size)
-        for series_type in SERIES_TYPES
+        _load_view_slices(root, study_id, study_series, st, image_size, num_slices)
+        for st in SERIES_TYPES
     ]
     return np.stack(views, axis=0).astype(np.float32)
 
 
-def _load_view_image(
+def _load_view_slices(
     dataset_root: Path,
     study_id: int,
     study_series: pd.DataFrame,
     series_type: str,
     image_size: int,
+    num_slices: int,
 ) -> np.ndarray:
     series_id = _select_series_id(study_series, series_type)
     if series_id is None:
-        return np.zeros((image_size, image_size), dtype=np.float32)
+        if num_slices == 1:
+            return np.zeros((image_size, image_size), dtype=np.float32)
+        return np.zeros((num_slices, image_size, image_size), dtype=np.float32)
+
     dicom_files = _list_dicom_files(dataset_root / "train_images" / str(study_id) / str(series_id))
     if not dicom_files:
-        return np.zeros((image_size, image_size), dtype=np.float32)
-    representative_file = dicom_files[len(dicom_files) // 2]
-    pixels = _read_dicom_pixels(representative_file)
+        if num_slices == 1:
+            return np.zeros((image_size, image_size), dtype=np.float32)
+        return np.zeros((num_slices, image_size, image_size), dtype=np.float32)
+
+    indices = _select_slice_indices(len(dicom_files), num_slices)
+    slices = [_read_and_resize(dicom_files[i], image_size) for i in indices]
+
+    if num_slices == 1:
+        return slices[0]
+    return np.stack(slices, axis=0)
+
+
+def _select_slice_indices(total: int, num_slices: int) -> list[int]:
+    if num_slices == 1:
+        return [total // 2]
+    if total <= num_slices:
+        indices = list(range(total))
+        while len(indices) < num_slices:
+            indices.append(indices[-1])
+        return indices
+    step = (total - 1) / (num_slices - 1)
+    return [round(i * step) for i in range(num_slices)]
+
+
+def _read_and_resize(path: Path, image_size: int) -> np.ndarray:
+    pixels = _read_dicom_pixels(path)
     normalized = _normalize_pixels(pixels)
     return cv2.resize(normalized, (image_size, image_size), interpolation=cv2.INTER_AREA)
 
