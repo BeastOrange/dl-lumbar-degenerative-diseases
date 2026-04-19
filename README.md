@@ -35,6 +35,8 @@
 
 ### 安装步骤
 
+#### macOS / Linux
+
 ```bash
 # 1. 安装 uv（如果未安装）
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -43,11 +45,32 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 uv python install 3.11
 
 # 3. 安装项目依赖
-uv sync --extra dev
+# macOS 下推荐使用非 editable 安装，避免 .pth 被系统标记为 hidden 后无法注入 src 路径
+uv sync --extra dev --no-editable
 
 # 4. 验证安装
 uv run lumbar-cli healthcheck --target mac    # macOS
 uv run lumbar-cli healthcheck --target linux  # Linux
+```
+
+#### Windows PowerShell
+
+```powershell
+# 1. 安装 uv（如果未安装）
+powershell -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+# 2. 安装 Python 3.11
+uv python install 3.11
+
+# 3. 安装项目依赖
+# 无 NVIDIA GPU 时使用 CPU 版本
+uv sync --extra dev --extra windows-cpu
+
+# 如果客户电脑装有 NVIDIA 驱动并希望启用 GPU，可改用：
+# uv sync --extra dev --extra windows-gpu
+
+# 4. 验证安装
+uv run lumbar-cli healthcheck --target windows
 ```
 
 ## 常用命令
@@ -62,6 +85,13 @@ uv run lumbar-cli eda --dataset-root ./rsna-2024-lumbar-spine-degenerative-class
 uv run lumbar-cli preprocess --dataset-root ./rsna-2024-lumbar-spine-degenerative-classification
 ```
 
+Windows PowerShell:
+
+```powershell
+uv run lumbar-cli eda --dataset-root ".\rsna-2024-lumbar-spine-degenerative-classification"
+uv run lumbar-cli preprocess --dataset-root ".\rsna-2024-lumbar-spine-degenerative-classification"
+```
+
 ### 模型训练
 
 ```bash
@@ -70,6 +100,13 @@ uv run lumbar-cli train --config configs/train/thesis/targeted_best_combo.yaml
 
 # 3-fold 交叉验证集成训练
 uv run lumbar-cli train --cv --config configs/train/thesis/phase_d_cv_ensemble.yaml
+```
+
+Windows PowerShell:
+
+```powershell
+uv run lumbar-cli train --config .\configs\train\thesis\targeted_best_combo.yaml
+uv run lumbar-cli train --cv --config .\configs\train\thesis\phase_d_cv_ensemble.yaml
 ```
 
 ### 模型评估
@@ -82,6 +119,13 @@ uv run lumbar-cli evaluate --run-dir artifacts/runs/<run-id>
 uv run lumbar-cli compare --runs-root artifacts/runs --primary-metric val_macro_f1
 ```
 
+Windows PowerShell:
+
+```powershell
+uv run lumbar-cli evaluate --run-dir .\artifacts\runs\<run-id>
+uv run lumbar-cli compare --runs-root .\artifacts\runs --primary-metric val_macro_f1
+```
+
 ### 检测平台
 
 ```bash
@@ -89,10 +133,41 @@ uv run lumbar-cli compare --runs-root artifacts/runs --primary-metric val_macro_
 uv run streamlit run apps/streamlit/Home.py
 ```
 
+Windows PowerShell:
+
+```powershell
+uv run streamlit run .\apps\streamlit\Home.py
+```
+
 ### 测试
 
 ```bash
 uv run pytest tests/ -q
+```
+
+Windows PowerShell:
+
+```powershell
+uv run pytest .\tests\ -q
+```
+
+## 常见问题
+
+### `ModuleNotFoundError: No module named 'dl_lumbar_dd'`
+
+如果执行 `uv run lumbar-cli ...` 时出现这个错误，通常是因为 macOS 上的 editable 安装生成了 `.pth` 文件，但该文件被系统标记为 `hidden`，Python 启动时会跳过它，导致 `src/dl_lumbar_dd` 没有加入 `sys.path`。
+
+直接重新同步为非 editable 安装即可：
+
+```bash
+uv sync --extra dev --no-editable
+```
+
+如果你已经执行过一次 `uv sync --extra dev`，直接再运行上面的命令覆盖安装即可，然后重新执行：
+
+```bash
+uv run lumbar-cli healthcheck --target mac
+uv run lumbar-cli eda --dataset-root ./rsna-2024-lumbar-spine-degenerative-classification
 ```
 
 ## 最佳模型
