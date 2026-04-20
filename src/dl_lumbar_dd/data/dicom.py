@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -18,6 +19,46 @@ from dl_lumbar_dd.constants import SERIES_TYPES
 class DicomUpload:
     name: str
     content: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class UploadStudySummary:
+    study_key: str
+    study_label: str
+    file_count: int
+    recognized_series: tuple[str, ...]
+    missing_series: tuple[str, ...]
+    ready: bool
+
+
+@dataclass(frozen=True, slots=True)
+class UploadStudyGroup:
+    summary: UploadStudySummary
+    uploads: tuple[DicomUpload, ...]
+
+    @property
+    def study_key(self) -> str:
+        return self.summary.study_key
+
+    @property
+    def study_label(self) -> str:
+        return self.summary.study_label
+
+    @property
+    def file_count(self) -> int:
+        return self.summary.file_count
+
+    @property
+    def recognized_series(self) -> tuple[str, ...]:
+        return self.summary.recognized_series
+
+    @property
+    def missing_series(self) -> tuple[str, ...]:
+        return self.summary.missing_series
+
+    @property
+    def ready(self) -> bool:
+        return self.summary.ready
 
 
 def build_three_view_tensor(
@@ -68,6 +109,9 @@ def build_three_view_tensor_from_uploads(
     uploads: list[DicomUpload],
     image_size: int = 224,
 ) -> np.ndarray:
+    if not uploads:
+        raise ValueError("未读取到任何 DCM 文件，请重新选择包含 DCM 的目录。")
+
     grouped: dict[str, list[tuple[int, np.ndarray]]] = {series_type: [] for series_type in SERIES_TYPES}
     for upload in uploads:
         dataset = pydicom.dcmread(BytesIO(upload.content), force=True)
@@ -79,8 +123,9 @@ def build_three_view_tensor_from_uploads(
 
     missing = [series_type for series_type, slices in grouped.items() if not slices]
     if missing:
+        missing_text = ", ".join(missing)
         raise ValueError(
-            "上传的文件不完整。请直接选择同一个病例文件夹中的全部 DCM 文件一起上传，不要手动只挑几张。"
+            f"所选病例组文件不完整，仍缺少必要序列: {missing_text}。请重新选择包含完整 DCM 文件的目录。"
         )
 
     views = []
@@ -91,6 +136,29 @@ def build_three_view_tensor_from_uploads(
         resized = cv2.resize(normalized, (image_size, image_size), interpolation=cv2.INTER_AREA)
         views.append(resized)
     return np.stack(views, axis=0).astype(np.float32)
+
+
+def split_uploads_by_study(uploads: list[DicomUpload]) -> list[UploadStudyGroup]:
+    parsed_uploads = [_parse_upload_metadata(upload, index) for index, upload in enumerate(uploads)]
+    groups: dict[str, list[_ParsedUpload]] = {}
+    for parsed_upload in parsed_uploads:
+        groups.setdefault(parsed_upload.study_key, []).append(parsed_upload)
+
+    upload_groups: list[UploadStudyGroup] = []
+    for parsed_group in groups.values():
+        summary = _build_upload_study_summary(parsed_group)
+        group_uploads = tuple(parsed.upload for parsed in parsed_group)
+        upload_groups.append(UploadStudyGroup(summary=summary, uploads=group_uploads))
+
+    return upload_groups
+
+
+def inspect_upload_studies(uploads: list[DicomUpload]) -> list[UploadStudySummary]:
+    return [group.summary for group in split_uploads_by_study(uploads)]
+
+
+def group_dicom_uploads_by_study(uploads: list[DicomUpload]) -> list[UploadStudySummary]:
+    return inspect_upload_studies(uploads)
 
 
 def _load_targeted_view(
@@ -301,6 +369,88 @@ def _instance_number(dataset: pydicom.Dataset) -> int:
         return int(raw_value)
     except (TypeError, ValueError):
         return 0
+
+
+@dataclass(frozen=True, slots=True)
+class _ParsedUpload:
+    upload: DicomUpload
+    study_key: str
+    study_label: str
+    series_type: str | None
+
+
+def _parse_upload_metadata(upload: DicomUpload, fallback_index: int) -> _ParsedUpload:
+    dataset = pydicom.dcmread(
+        BytesIO(upload.content),
+        force=True,
+        stop_before_pixels=True,
+        specific_tags=[
+            "StudyInstanceUID",
+            "StudyID",
+            "PatientID",
+            "AccessionNumber",
+            "StudyDate",
+            "SeriesDescription",
+        ],
+    )
+    study_key, study_label = _resolve_study_identity(dataset, fallback_index)
+    series_type = _resolve_uploaded_series_type(dataset, upload.name)
+    return _ParsedUpload(
+        upload=upload,
+        study_key=study_key,
+        study_label=study_label,
+        series_type=series_type,
+    )
+
+
+def _resolve_study_identity(dataset: pydicom.Dataset, fallback_index: int) -> tuple[str, str]:
+    study_instance_uid = _clean_metadata_value(getattr(dataset, "StudyInstanceUID", None))
+    if study_instance_uid:
+        suffix = study_instance_uid.split(".")[-1][-8:] or study_instance_uid[-8:]
+        return (study_instance_uid, f"病例 {suffix}")
+
+    patient_id = _clean_metadata_value(getattr(dataset, "PatientID", None))
+    study_id = _clean_metadata_value(getattr(dataset, "StudyID", None))
+    accession_number = _clean_metadata_value(getattr(dataset, "AccessionNumber", None))
+    study_date = _clean_metadata_value(getattr(dataset, "StudyDate", None))
+    fallback_parts = [
+        ("study_id", study_id),
+        ("patient_id", patient_id),
+        ("accession", accession_number),
+        ("study_date", study_date),
+    ]
+    populated_parts = [(name, value) for name, value in fallback_parts if value]
+    if populated_parts:
+        study_key = "fallback:" + "|".join(f"{name}={value}" for name, value in populated_parts)
+        label_parts = [value for _, value in populated_parts]
+        return (study_key, " / ".join(label_parts))
+
+    fallback_key = f"fallback:index={fallback_index}"
+    return (fallback_key, f"未识别病例 {fallback_index + 1}")
+
+
+def _build_upload_study_summary(parsed_group: list[_ParsedUpload]) -> UploadStudySummary:
+    first = parsed_group[0]
+    recognized_series = tuple(
+        series_type for series_type in SERIES_TYPES
+        if any(parsed.series_type == series_type for parsed in parsed_group)
+    )
+    missing_series = tuple(series_type for series_type in SERIES_TYPES if series_type not in recognized_series)
+    return UploadStudySummary(
+        study_key=first.study_key,
+        study_label=first.study_label,
+        file_count=len(parsed_group),
+        recognized_series=recognized_series,
+        missing_series=missing_series,
+        ready=not missing_series,
+    )
+
+
+def _clean_metadata_value(raw_value: Any) -> str:
+    if raw_value is None:
+        return ""
+    value = str(raw_value).strip()
+    return value
 
 
 def _resolve_uploaded_series_type(dataset: pydicom.Dataset, filename: str) -> str | None:

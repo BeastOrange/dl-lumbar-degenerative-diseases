@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+import dl_lumbar_dd.data.dicom as dicom_data
 import numpy as np
 import pandas as pd
+import pydicom
 import torch
 import yaml
 
@@ -51,6 +54,25 @@ class BatchInferenceResult:
     predicted_label: str | None
     probabilities: dict[str, float]
     error_message: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class UploadCaseSummary:
+    study_key: str
+    study_label: str
+    file_count: int
+    recognized_series: list[str]
+    missing_series: list[str]
+    ready: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _UploadStudyGroup:
+    study_key: str
+    study_label: str
+    uploads: tuple[DicomUpload, ...]
+    recognized_series: tuple[str, ...]
+    missing_series: tuple[str, ...]
 
 
 def find_latest_checkpoint_run(runs_root: str | Path = ARTIFACTS_DIR / "runs") -> Path:
@@ -120,13 +142,32 @@ class StudyInferenceService:
             probabilities=probability_map,
         )
 
+    def inspect_upload_cases(self, uploads: list[DicomUpload]) -> list[UploadCaseSummary]:
+        return [
+            UploadCaseSummary(
+                study_key=group.study_key,
+                study_label=group.study_label,
+                file_count=len(group.uploads),
+                recognized_series=list(group.recognized_series),
+                missing_series=list(group.missing_series),
+                ready=not group.missing_series,
+            )
+            for group in _group_upload_cases(uploads)
+        ]
+
+    def predict_upload_case(self, uploads: list[DicomUpload], study_key: str) -> InferenceResult:
+        for group in _group_upload_cases(uploads):
+            if group.study_key == study_key:
+                return self.predict(list(group.uploads))
+        raise ValueError(f"未找到 study_key={study_key} 对应的上传病例，请重新选择后再分析。")
+
     def predict_dataset(
         self,
         dataset_root: str | Path | None = None,
     ) -> list[BatchInferenceResult]:
         root = Path(dataset_root) if dataset_root is not None else DEFAULT_DATASET_ROOT
         series_table = _load_series_table(root)
-        study_ids = sorted(series_table["study_id"].drop_duplicates().astype(int).tolist())
+        study_ids = _discover_dataset_study_ids(root, series_table)
         return [
             self.predict_study(dataset_root=root, study_id=study_id, series_table=series_table)
             for study_id in study_ids
@@ -235,6 +276,29 @@ def _load_series_table(dataset_root: Path) -> pd.DataFrame:
     return normalized
 
 
+def _discover_dataset_study_ids(dataset_root: Path, series_table: pd.DataFrame) -> list[int]:
+    train_images_root = dataset_root / "train_images"
+    if not train_images_root.exists():
+        raise FileNotFoundError(f"未找到病例影像目录：{train_images_root}")
+
+    discovered_ids: list[int] = []
+    for study_dir in sorted(train_images_root.iterdir()):
+        if not study_dir.is_dir():
+            continue
+        if not study_dir.name.isdigit():
+            continue
+        has_series_dir = any(child.is_dir() for child in study_dir.iterdir())
+        if not has_series_dir:
+            continue
+        discovered_ids.append(int(study_dir.name))
+
+    if discovered_ids:
+        known_ids = set(series_table["study_id"].astype(int).tolist())
+        return [study_id for study_id in discovered_ids if study_id in known_ids]
+
+    return sorted(series_table["study_id"].drop_duplicates().astype(int).tolist())
+
+
 def _find_missing_required_series(dataset_root: Path, study_id: int, series_table: pd.DataFrame) -> list[str]:
     study_series = series_table[series_table["study_id"] == study_id]
     missing: list[str] = []
@@ -257,3 +321,76 @@ def _resolve_device(device: str) -> str:
     if normalized == "cuda" and not torch.cuda.is_available():
         return "cpu"
     return normalized
+
+
+def _group_upload_cases(uploads: list[DicomUpload]) -> list[_UploadStudyGroup]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for upload in uploads:
+        metadata = _read_upload_metadata(upload)
+        bucket = grouped.setdefault(metadata["study_key"], {"uploads": [], "meta": metadata, "recognized": set()})
+        bucket["uploads"].append(upload)
+        if metadata["series_type"] is not None:
+            bucket["recognized"].add(metadata["series_type"])
+
+    return [
+        _UploadStudyGroup(
+            study_key=str(study_key),
+            study_label=_format_upload_case_label(index, bucket["meta"]),
+            uploads=tuple(bucket["uploads"]),
+            recognized_series=tuple(series for series in SERIES_TYPES if series in bucket["recognized"]),
+            missing_series=tuple(series for series in SERIES_TYPES if series not in bucket["recognized"]),
+        )
+        for index, (study_key, bucket) in enumerate(grouped.items(), start=1)
+    ]
+
+
+def _read_upload_metadata(upload: DicomUpload) -> dict[str, str | None]:
+    try:
+        dataset = pydicom.dcmread(
+            BytesIO(upload.content),
+            force=True,
+            stop_before_pixels=True,
+            specific_tags=["StudyInstanceUID", "PatientID", "StudyDate", "StudyID", "AccessionNumber", "SeriesDescription"],
+        )
+    except Exception:
+        dataset = pydicom.Dataset()
+    patient_id = _read_text(getattr(dataset, "PatientID", None))
+    study_date = _read_text(getattr(dataset, "StudyDate", None))
+    study_key = _read_text(getattr(dataset, "StudyInstanceUID", None)) or "|".join(
+        part for part in (patient_id, study_date, _read_text(getattr(dataset, "StudyID", None)), _read_text(getattr(dataset, "AccessionNumber", None))) if part
+    ) or "uploaded-study"
+    return {
+        "study_key": study_key,
+        "patient_id": patient_id,
+        "study_date": study_date,
+        "series_type": _resolve_uploaded_series_type(dataset, upload.name),
+    }
+
+
+def _resolve_uploaded_series_type(dataset: pydicom.Dataset, filename: str) -> str | None:
+    resolver = getattr(dicom_data, "_resolve_uploaded_series_type", None)
+    if callable(resolver):
+        return resolver(dataset, filename)
+    description = str(getattr(dataset, "SeriesDescription", "")).strip().lower()
+    fallback = filename.lower()
+    if "sag" in description and "t1" in description or "sag" in fallback and "t1" in fallback:
+        return "Sagittal T1"
+    if "sag" in description and ("t2" in description or "stir" in description) or "sag" in fallback and ("t2" in fallback or "stir" in fallback):
+        return "Sagittal T2/STIR"
+    if ("axial" in description or description.startswith("ax")) and "t2" in description or ("axial" in fallback or fallback.startswith("ax")) and "t2" in fallback:
+        return "Axial T2"
+    return None
+
+
+def _format_upload_case_label(index: int, metadata: dict[str, str | None]) -> str:
+    patient_id = metadata.get("patient_id")
+    study_date = metadata.get("study_date")
+    if study_date and len(study_date) == 8 and study_date.isdigit():
+        study_date = f"{study_date[:4]}-{study_date[4:6]}-{study_date[6:]}"
+    detail = " / ".join(part for part in (patient_id, study_date) if part)
+    return f"病例 {index}" if not detail else f"病例 {index}（{detail}）"
+
+
+def _read_text(value: object) -> str | None:
+    text = str(value).strip() if value is not None else ""
+    return text or None

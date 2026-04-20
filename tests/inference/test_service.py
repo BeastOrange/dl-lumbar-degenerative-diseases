@@ -20,7 +20,16 @@ from dl_lumbar_dd.inference.service import DicomUpload, StudyInferenceService, f
 from tests.data.helpers import create_mock_rsna_dataset
 
 
-def _make_upload(series_description: str, instance_number: int, *, bright_col: int) -> DicomUpload:
+def _make_upload(
+    series_description: str,
+    instance_number: int,
+    *,
+    bright_col: int,
+    study_instance_uid: str | None = None,
+    patient_id: str = "123",
+    study_date: str = "20260420",
+    name: str | None = None,
+) -> DicomUpload:
     pixels = np.zeros((16, 16), dtype=np.uint16)
     pixels[:, bright_col: bright_col + 2] = 500
     pixels += np.arange(16, dtype=np.uint16).reshape(16, 1)
@@ -37,8 +46,9 @@ def _make_upload(series_description: str, instance_number: int, *, bright_col: i
     dataset.SOPInstanceUID = file_meta.MediaStorageSOPInstanceUID
     dataset.Modality = "MR"
     dataset.PatientName = "Test^Patient"
-    dataset.PatientID = "123"
-    dataset.StudyInstanceUID = generate_uid()
+    dataset.PatientID = patient_id
+    dataset.StudyDate = study_date
+    dataset.StudyInstanceUID = study_instance_uid or generate_uid()
     dataset.SeriesInstanceUID = generate_uid()
     dataset.SeriesDescription = series_description
     dataset.InstanceNumber = instance_number
@@ -51,7 +61,7 @@ def _make_upload(series_description: str, instance_number: int, *, bright_col: i
     dataset.BitsAllocated = 16
     dataset.PixelData = pixels.tobytes()
     pydicom.dcmwrite(buffer, dataset, enforce_file_format=True)
-    return DicomUpload(name=f"{series_description}-{instance_number}.dcm", content=buffer.getvalue())
+    return DicomUpload(name=name or f"{series_description}-{instance_number}.dcm", content=buffer.getvalue())
 
 
 def test_build_three_view_tensor_from_uploads_returns_normalized_tensor() -> None:
@@ -75,7 +85,7 @@ def test_build_three_view_tensor_from_uploads_requires_all_three_series() -> Non
         _make_upload("Axial T2", 1, bright_col=1),
     ]
 
-    with pytest.raises(ValueError, match="文件不完整"):
+    with pytest.raises(ValueError, match="文件不完整|缺少必要序列"):
         build_three_view_tensor_from_uploads(uploads, image_size=32)
 
 
@@ -263,3 +273,85 @@ def test_study_inference_service_predict_dataset_discovers_studies_and_splits_st
     assert built_studies == [1000, failed_study_id]
     assert model_calls == [_ModelCall(pretrained=True, load_backbone_weights=False)]
     assert checkpoint_loads == [run_dir / "best.ckpt"]
+
+
+def test_inspect_upload_cases_groups_studies_and_reports_missing_series(tmp_path: Path) -> None:
+    service = StudyInferenceService(
+        run_dir=tmp_path,
+        model=_FakeModel(),
+        image_size=32,
+        target_name="L4/L5 椎管狭窄",
+        device="cpu",
+    )
+    study_a = generate_uid()
+    study_b = generate_uid()
+    uploads = [
+        _make_upload("Sagittal T1", 1, bright_col=1, study_instance_uid=study_a, patient_id="case-a", study_date="20240101"),
+        _make_upload("Sagittal T2/STIR", 2, bright_col=3, study_instance_uid=study_a, patient_id="case-a", study_date="20240101"),
+        _make_upload("Axial T2", 3, bright_col=5, study_instance_uid=study_a, patient_id="case-a", study_date="20240101"),
+        _make_upload("Sagittal T1", 1, bright_col=7, study_instance_uid=study_b, patient_id="case-b", study_date="20240202"),
+        _make_upload("Axial T2", 2, bright_col=9, study_instance_uid=study_b, patient_id="case-b", study_date="20240202"),
+    ]
+
+    summaries = service.inspect_upload_cases(uploads)
+
+    assert len(summaries) == 2
+    assert summaries[0].study_key == study_a
+    assert summaries[0].study_label == "病例 1（case-a / 2024-01-01）"
+    assert summaries[0].file_count == 3
+    assert summaries[0].recognized_series == ["Sagittal T1", "Sagittal T2/STIR", "Axial T2"]
+    assert summaries[0].missing_series == []
+    assert summaries[0].ready is True
+
+    assert summaries[1].study_key == study_b
+    assert summaries[1].study_label == "病例 2（case-b / 2024-02-02）"
+    assert summaries[1].file_count == 2
+    assert summaries[1].recognized_series == ["Sagittal T1", "Axial T2"]
+    assert summaries[1].missing_series == ["Sagittal T2/STIR"]
+    assert summaries[1].ready is False
+
+
+def test_predict_upload_case_only_uses_selected_group(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    built_upload_names: list[str] = []
+    service = StudyInferenceService(
+        run_dir=tmp_path,
+        model=_FakeModel(),
+        image_size=32,
+        target_name="L4/L5 椎管狭窄",
+        device="cpu",
+    )
+    study_a = generate_uid()
+    study_b = generate_uid()
+    uploads = [
+        _make_upload("Sagittal T1", 1, bright_col=1, study_instance_uid=study_a, patient_id="case-a", name="a-sag-t1.dcm"),
+        _make_upload("Sagittal T2/STIR", 2, bright_col=3, study_instance_uid=study_a, patient_id="case-a", name="a-sag-t2.dcm"),
+        _make_upload("Axial T2", 3, bright_col=5, study_instance_uid=study_a, patient_id="case-a", name="a-ax-t2.dcm"),
+        _make_upload("Sagittal T1", 1, bright_col=7, study_instance_uid=study_b, patient_id="case-b", name="b-sag-t1.dcm"),
+        _make_upload("Sagittal T2/STIR", 2, bright_col=9, study_instance_uid=study_b, patient_id="case-b", name="b-sag-t2.dcm"),
+        _make_upload("Axial T2", 3, bright_col=11, study_instance_uid=study_b, patient_id="case-b", name="b-ax-t2.dcm"),
+    ]
+
+    monkeypatch.setattr(
+        "dl_lumbar_dd.inference.service.build_three_view_tensor_from_uploads",
+        lambda case_uploads, image_size: built_upload_names.extend(upload.name for upload in case_uploads) or np.ones((3, image_size, image_size), dtype=np.float32),
+    )
+
+    study_key = service.inspect_upload_cases(uploads)[1].study_key
+    result = service.predict_upload_case(uploads, study_key)
+
+    assert built_upload_names == ["b-sag-t1.dcm", "b-sag-t2.dcm", "b-ax-t2.dcm"]
+    assert result.predicted_label == "中度"
+
+
+def test_predict_upload_case_raises_clear_error_when_study_key_missing(tmp_path: Path) -> None:
+    service = StudyInferenceService(
+        run_dir=tmp_path,
+        model=_FakeModel(),
+        image_size=32,
+        target_name="L4/L5 椎管狭窄",
+        device="cpu",
+    )
+    uploads = [_make_upload("Sagittal T1", 1, bright_col=1, study_instance_uid=generate_uid(), patient_id="case-a")]
+
+    with pytest.raises(ValueError, match="未找到 study_key=missing-study 对应的上传病例"):
+        service.predict_upload_case(uploads, "missing-study")

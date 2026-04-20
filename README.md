@@ -133,13 +133,20 @@ uv run lumbar-cli compare --runs-root .\artifacts\runs --primary-metric val_macr
 uv run streamlit run apps/streamlit_app.py
 ```
 
-当前推荐入口为中文极简一键分析页，只保留“开始分析项目内数据集 -> 输出批量分析结果”。页面不提供病例选择和文件上传，点击按钮后自动执行项目内数据集全量分析。
+当前推荐入口为中文极简一键分析页。页面主路径为“点击开始分析 -> 系统自动扫描项目根目录中的数据集 -> 识别病例目录 -> 批量分析 -> 输出结果”。
 
 Windows PowerShell:
 
 ```powershell
 uv run streamlit run .\apps\streamlit_app.py
 ```
+
+页面使用说明：
+
+- 无需上传文件，数据来源固定为项目根目录下的 `rsna-2024-lumbar-spine-degenerative-classification/`
+- 点击“开始分析”后，系统会自动扫描 `train_images/<study_id>/` 目录结构
+- 系统会自动判断哪些目录属于单个病例并逐个分析
+- 页面最终输出批量分析结果、状态统计和当前模型信息
 
 ### 测试
 
