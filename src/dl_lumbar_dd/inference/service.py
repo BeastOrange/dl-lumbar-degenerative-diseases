@@ -7,11 +7,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import torch
 import yaml
 
-from dl_lumbar_dd.constants import ARTIFACTS_DIR, INDEX_TO_SEVERITY
-from dl_lumbar_dd.data.dicom import DicomUpload, build_three_view_tensor_from_uploads
+from dl_lumbar_dd.constants import ARTIFACTS_DIR, DEFAULT_DATASET_ROOT, INDEX_TO_SEVERITY, SERIES_TYPES
+from dl_lumbar_dd.data.dicom import DicomUpload, build_three_view_tensor, build_three_view_tensor_from_uploads
 from dl_lumbar_dd.models import create_model
 
 SEVERITY_TO_ZH = {
@@ -26,6 +27,9 @@ TARGET_PREFIX_TO_ZH = {
     "left_subarticular_stenosis": "左侧侧隐窝狭窄",
     "right_subarticular_stenosis": "右侧侧隐窝狭窄",
 }
+STATUS_SUCCESS = "成功"
+STATUS_SKIPPED = "已跳过"
+STATUS_FAILED = "失败"
 
 
 @dataclass(frozen=True, slots=True)
@@ -35,6 +39,18 @@ class InferenceResult:
     predicted_index: int
     predicted_label: str
     probabilities: dict[str, float]
+
+
+@dataclass(frozen=True, slots=True)
+class BatchInferenceResult:
+    study_id: int
+    run_dir: Path
+    target_name: str
+    status: str
+    predicted_index: int | None
+    predicted_label: str | None
+    probabilities: dict[str, float]
+    error_message: str | None
 
 
 def find_latest_checkpoint_run(runs_root: str | Path = ARTIFACTS_DIR / "runs") -> Path:
@@ -95,6 +111,80 @@ class StudyInferenceService:
 
     def predict(self, uploads: list[DicomUpload]) -> InferenceResult:
         tensor = build_three_view_tensor_from_uploads(uploads, image_size=self.image_size)
+        predicted_index, predicted_label, probability_map = self._predict_tensor(tensor)
+        return InferenceResult(
+            run_dir=self.run_dir,
+            target_name=self.target_name,
+            predicted_index=predicted_index,
+            predicted_label=predicted_label,
+            probabilities=probability_map,
+        )
+
+    def predict_dataset(
+        self,
+        dataset_root: str | Path | None = None,
+    ) -> list[BatchInferenceResult]:
+        root = Path(dataset_root) if dataset_root is not None else DEFAULT_DATASET_ROOT
+        series_table = _load_series_table(root)
+        study_ids = sorted(series_table["study_id"].drop_duplicates().astype(int).tolist())
+        return [
+            self.predict_study(dataset_root=root, study_id=study_id, series_table=series_table)
+            for study_id in study_ids
+        ]
+
+    def predict_study(
+        self,
+        *,
+        dataset_root: str | Path,
+        study_id: int,
+        series_table: pd.DataFrame,
+    ) -> BatchInferenceResult:
+        root = Path(dataset_root)
+        missing_series = _find_missing_required_series(root, study_id, series_table)
+        if missing_series:
+            return BatchInferenceResult(
+                study_id=study_id,
+                run_dir=self.run_dir,
+                target_name=self.target_name,
+                status=STATUS_SKIPPED,
+                predicted_index=None,
+                predicted_label=None,
+                probabilities={},
+                error_message=f"缺少必要序列: {', '.join(missing_series)}",
+            )
+
+        try:
+            tensor = build_three_view_tensor(
+                dataset_root=root,
+                study_id=study_id,
+                series_table=series_table,
+                image_size=self.image_size,
+            )
+            predicted_index, predicted_label, probability_map = self._predict_tensor(tensor)
+        except Exception as exc:
+            return BatchInferenceResult(
+                study_id=study_id,
+                run_dir=self.run_dir,
+                target_name=self.target_name,
+                status=STATUS_FAILED,
+                predicted_index=None,
+                predicted_label=None,
+                probabilities={},
+                error_message=str(exc) or exc.__class__.__name__,
+            )
+
+        return BatchInferenceResult(
+            study_id=study_id,
+            run_dir=self.run_dir,
+            target_name=self.target_name,
+            status=STATUS_SUCCESS,
+            predicted_index=predicted_index,
+            predicted_label=predicted_label,
+            probabilities=probability_map,
+            error_message=None,
+        )
+
+    def _predict_tensor(self, tensor: np.ndarray) -> tuple[int, str, dict[str, float]]:
         inputs = torch.from_numpy(tensor).unsqueeze(0).unsqueeze(2).to(device=self.device, dtype=torch.float32)
         with torch.inference_mode():
             logits = self.model(inputs)
@@ -105,13 +195,7 @@ class StudyInferenceService:
         predicted_index = int(np.argmax(probabilities))
         labels = [SEVERITY_TO_ZH[INDEX_TO_SEVERITY[index]] for index in range(probabilities.shape[0])]
         probability_map = {label: float(prob) for label, prob in zip(labels, probabilities, strict=True)}
-        return InferenceResult(
-            run_dir=self.run_dir,
-            target_name=self.target_name,
-            predicted_index=predicted_index,
-            predicted_label=labels[predicted_index],
-            probabilities=probability_map,
-        )
+        return predicted_index, labels[predicted_index], probability_map
 
 
 def _load_run_config(run_dir: Path) -> dict[str, Any]:
@@ -132,6 +216,38 @@ def _format_target_name(target_column: str) -> str:
         level = target_column.removeprefix(prefix_token).upper().replace("_", "/")
         return f"{level} {label}"
     return target_column
+
+
+def _load_series_table(dataset_root: Path) -> pd.DataFrame:
+    series_path = dataset_root / "train_series_descriptions.csv"
+    if not series_path.exists():
+        raise FileNotFoundError(f"未找到病例序列表：{series_path}")
+    series_table = pd.read_csv(series_path)
+    required_columns = {"study_id", "series_id", "series_description"}
+    missing_columns = required_columns - set(series_table.columns)
+    if missing_columns:
+        missing_list = ", ".join(sorted(missing_columns))
+        raise ValueError(f"病例序列表缺少必要列: {missing_list}")
+    normalized = series_table.copy()
+    normalized["study_id"] = normalized["study_id"].astype(int)
+    normalized["series_id"] = normalized["series_id"].astype(int)
+    normalized["series_description"] = normalized["series_description"].astype(str)
+    return normalized
+
+
+def _find_missing_required_series(dataset_root: Path, study_id: int, series_table: pd.DataFrame) -> list[str]:
+    study_series = series_table[series_table["study_id"] == study_id]
+    missing: list[str] = []
+    for series_type in SERIES_TYPES:
+        matches = study_series[study_series["series_description"] == series_type].sort_values("series_id")
+        if matches.empty:
+            missing.append(series_type)
+            continue
+        series_id = int(matches.iloc[0]["series_id"])
+        series_dir = dataset_root / "train_images" / str(study_id) / str(series_id)
+        if not series_dir.exists() or not any(series_dir.glob("*.dcm")):
+            missing.append(series_type)
+    return missing
 
 
 def _resolve_device(device: str) -> str:

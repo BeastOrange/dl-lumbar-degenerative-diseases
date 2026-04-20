@@ -40,16 +40,18 @@ def build_three_view_tensor(
     """
     root = Path(dataset_root)
     study_series = series_table[series_table["study_id"] == study_id]
+    resolved_series_ids = _resolve_required_series_ids(study_id, study_series)
 
     views = []
     for series_type in SERIES_TYPES:
-        series_id = _select_series_id(study_series, series_type)
-        coord_entries = coord_lookup.get(series_id, []) if coord_lookup and series_id else []
+        series_id = resolved_series_ids[series_type]
+        coord_entries = coord_lookup.get(series_id, []) if coord_lookup else []
 
         view = _load_targeted_view(
             dataset_root=root,
             study_id=study_id,
             series_id=series_id,
+            series_type=series_type,
             image_size=image_size,
             num_slices=num_slices,
             coord_entries=coord_entries,
@@ -94,7 +96,8 @@ def build_three_view_tensor_from_uploads(
 def _load_targeted_view(
     dataset_root: Path,
     study_id: int,
-    series_id: int | None,
+    series_id: int,
+    series_type: str,
     image_size: int,
     num_slices: int,
     coord_entries: list[tuple[int, int, float, float]],
@@ -102,17 +105,12 @@ def _load_targeted_view(
     roi_padding: float,
     context_slices: int,
 ) -> np.ndarray:
-    out_channels = max(num_slices, 1 + 2 * context_slices) if context_slices > 0 else num_slices
-    empty_single = np.zeros((image_size, image_size), dtype=np.float32)
-    empty_multi = np.zeros((out_channels, image_size, image_size), dtype=np.float32)
-
-    if series_id is None:
-        return empty_single if out_channels == 1 else empty_multi
-
     series_dir = dataset_root / "train_images" / str(study_id) / str(series_id)
     dicom_files = _list_dicom_files(series_dir)
     if not dicom_files:
-        return empty_single if out_channels == 1 else empty_multi
+        raise ValueError(
+            f"study_id={study_id} 缺少必要序列文件: {series_type} (series_id={series_id}) @ {series_dir}"
+        )
 
     # Level 1: Targeted slice selection
     target_idx, crop_xy = _resolve_target_slice(dicom_files, coord_entries)
@@ -237,6 +235,23 @@ def _select_series_id(study_series: pd.DataFrame, series_type: str) -> int | Non
     return int(matches.iloc[0]["series_id"])
 
 
+def _resolve_required_series_ids(study_id: int, study_series: pd.DataFrame) -> dict[str, int]:
+    resolved: dict[str, int] = {}
+    missing: list[str] = []
+    for series_type in SERIES_TYPES:
+        series_id = _select_series_id(study_series, series_type)
+        if series_id is None:
+            missing.append(series_type)
+            continue
+        resolved[series_type] = series_id
+
+    if missing:
+        joined = ", ".join(missing)
+        raise ValueError(f"study_id={study_id} 缺少必要序列: {joined}")
+
+    return resolved
+
+
 def _list_dicom_files(series_dir: Path) -> list[Path]:
     if not series_dir.exists():
         return []
@@ -244,7 +259,28 @@ def _list_dicom_files(series_dir: Path) -> list[Path]:
 
 
 def _dicom_sort_key(path: Path) -> tuple[int, str]:
+    instance_number = _read_instance_number_from_path(path)
+    if instance_number is not None:
+        return (instance_number, path.name)
     return (int(path.stem), path.name) if path.stem.isdigit() else (10**9, path.name)
+
+
+def _read_instance_number_from_path(path: Path) -> int | None:
+    try:
+        dataset = pydicom.dcmread(
+            str(path),
+            force=True,
+            stop_before_pixels=True,
+            specific_tags=["InstanceNumber"],
+        )
+    except Exception:
+        return None
+
+    raw_value = getattr(dataset, "InstanceNumber", None)
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _read_dicom_pixels(path: Path) -> np.ndarray:

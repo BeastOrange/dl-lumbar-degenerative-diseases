@@ -3,8 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+import shutil
 
 import numpy as np
+import pandas as pd
 import pydicom
 import pytest
 import torch
@@ -15,6 +17,7 @@ from torch import nn
 
 from dl_lumbar_dd.data.dicom import build_three_view_tensor_from_uploads
 from dl_lumbar_dd.inference.service import DicomUpload, StudyInferenceService, find_latest_checkpoint_run
+from tests.data.helpers import create_mock_rsna_dataset
 
 
 def _make_upload(series_description: str, instance_number: int, *, bright_col: int) -> DicomUpload:
@@ -72,7 +75,7 @@ def test_build_three_view_tensor_from_uploads_requires_all_three_series() -> Non
         _make_upload("Axial T2", 1, bright_col=1),
     ]
 
-    with pytest.raises(ValueError, match="Sagittal T2/STIR"):
+    with pytest.raises(ValueError, match="文件不完整"):
         build_three_view_tensor_from_uploads(uploads, image_size=32)
 
 
@@ -123,8 +126,8 @@ class _FakeModel(nn.Module):
         return torch.tensor([[0.1, 2.0, 0.3]], dtype=torch.float32)
 
 
-def test_study_inference_service_predict_returns_chinese_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    run_dir = tmp_path / "convnext_tiny_cbam-20260419-103601"
+def _write_run_dir(root: Path, *, image_size: int = 32) -> Path:
+    run_dir = root / "convnext_tiny_cbam-20260419-103601"
     run_dir.mkdir()
     (run_dir / "best.ckpt").write_bytes(b"checkpoint")
     (run_dir / "config.yaml").write_text(
@@ -136,7 +139,7 @@ def test_study_inference_service_predict_returns_chinese_result(tmp_path: Path, 
                 "pretrained": True,
                 "in_channels": 1,
                 "dropout": 0.2,
-                "image_size": 32,
+                "image_size": image_size,
                 "target_column": "spinal_canal_stenosis_l4_l5",
             },
             sort_keys=False,
@@ -144,6 +147,11 @@ def test_study_inference_service_predict_returns_chinese_result(tmp_path: Path, 
         ),
         encoding="utf-8",
     )
+    return run_dir
+
+
+def test_study_inference_service_predict_returns_chinese_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_dir = _write_run_dir(tmp_path)
 
     calls: list[_ModelCall] = []
 
@@ -173,3 +181,85 @@ def test_study_inference_service_predict_returns_chinese_result(tmp_path: Path, 
     assert result.predicted_label == "中度"
     assert result.target_name == "L4/L5 椎管狭窄"
     assert result.probabilities["中度"] > result.probabilities["轻度/正常"]
+
+
+def test_study_inference_service_predict_dataset_discovers_studies_and_splits_statuses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dataset_root = create_mock_rsna_dataset(tmp_path, study_count=3)
+    run_dir = _write_run_dir(tmp_path)
+    skipped_study_id = 1001
+    failed_study_id = 1002
+
+    series_path = dataset_root / "train_series_descriptions.csv"
+    series_frame = pd.read_csv(series_path)
+    series_frame = series_frame[
+        ~(
+            (series_frame["study_id"] == skipped_study_id)
+            & (series_frame["series_description"] == "Axial T2")
+        )
+    ]
+    series_frame.to_csv(series_path, index=False)
+    shutil.rmtree(dataset_root / "train_images" / str(skipped_study_id) / f"{skipped_study_id}3")
+
+    model_calls: list[_ModelCall] = []
+    checkpoint_loads: list[Path] = []
+    built_studies: list[int] = []
+
+    def _fake_create_model(**kwargs):
+        model_calls.append(
+            _ModelCall(
+                pretrained=bool(kwargs["pretrained"]),
+                load_backbone_weights=bool(kwargs["load_backbone_weights"]),
+            )
+        )
+        return _FakeModel()
+
+    def _fake_torch_load(path: Path, map_location: str = "cpu") -> dict[str, dict[str, torch.Tensor]]:
+        checkpoint_loads.append(Path(path))
+        return {"model_state": {}}
+
+    def _fake_build_three_view_tensor(
+        dataset_root: Path,
+        study_id: int,
+        series_table: pd.DataFrame,
+        image_size: int,
+    ) -> np.ndarray:
+        built_studies.append(study_id)
+        if study_id == failed_study_id:
+            raise RuntimeError("bad dicom slice")
+        return np.ones((3, image_size, image_size), dtype=np.float32)
+
+    monkeypatch.setattr("dl_lumbar_dd.inference.service.DEFAULT_DATASET_ROOT", dataset_root)
+    monkeypatch.setattr("dl_lumbar_dd.inference.service.create_model", _fake_create_model)
+    monkeypatch.setattr("dl_lumbar_dd.inference.service.torch.load", _fake_torch_load)
+    monkeypatch.setattr(
+        "dl_lumbar_dd.inference.service.build_three_view_tensor",
+        _fake_build_three_view_tensor,
+    )
+
+    service = StudyInferenceService.from_run_dir(run_dir)
+    results = service.predict_dataset()
+
+    assert [result.study_id for result in results] == [1000, skipped_study_id, failed_study_id]
+
+    success_result, skipped_result, failed_result = results
+    assert success_result.status == "成功"
+    assert success_result.predicted_label == "中度"
+    assert success_result.error_message is None
+
+    assert skipped_result.status == "已跳过"
+    assert skipped_result.predicted_label is None
+    assert skipped_result.probabilities == {}
+    assert skipped_result.error_message is not None
+    assert "Axial T2" in skipped_result.error_message
+
+    assert failed_result.status == "失败"
+    assert failed_result.predicted_label is None
+    assert failed_result.probabilities == {}
+    assert failed_result.error_message == "bad dicom slice"
+
+    assert built_studies == [1000, failed_study_id]
+    assert model_calls == [_ModelCall(pretrained=True, load_backbone_weights=False)]
+    assert checkpoint_loads == [run_dir / "best.ckpt"]

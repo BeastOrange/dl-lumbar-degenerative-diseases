@@ -127,14 +127,16 @@ def test_prepare_views_can_keep_pretrained_pipeline_without_loading_backbone_wei
         in_channels=1,
         dropout=0.1,
     )
-    inputs = torch.full((1, 1, 8, 8), 0.5, dtype=torch.float32)
+    inputs = torch.full((1, 3, 1, 8, 8), 0.5, dtype=torch.float32)
 
-    prepared = model._prepare_views(inputs)[0]
-    expected = model.input_normalizer(inputs.repeat(1, 3, 1, 1))
+    prepared_views = model._prepare_views(inputs)
 
     assert model.encoder.pretrained is False
-    assert prepared.shape == (1, 3, 8, 8)
-    assert torch.allclose(prepared, expected, atol=1e-6)
+    assert len(prepared_views) == 3
+    for index, prepared in enumerate(prepared_views):
+        expected = model.input_normalizer(inputs[:, index].repeat(1, 3, 1, 1))
+        assert prepared.shape == (1, 3, 8, 8)
+        assert torch.allclose(prepared, expected, atol=1e-6)
 
 
 def test_convnext_encoder_uses_torchvision_default_weights_when_no_local_file(
